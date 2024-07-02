@@ -10,6 +10,7 @@ import time
 import gc
 import torch
 import os
+from stable_baselines3.common.callbacks import BaseCallback
 
 
 print("TensorFlow version:", tf.__version__)
@@ -62,16 +63,17 @@ def load_model(trial, env):
     if 'model_path' not in trial.user_attrs:
         for key, value in trial.user_attrs.items():
             if key == value and key.startswith('./models/'):
-                model_path = value
-                break
-    else:
-        model_path = trial.user_attrs.get('model_path', None)
+                trial.user_attrs.set('model_path', value)
+                break                   
+    
+    model_path = trial.user_attrs.get('model_path', None)
         
-    if os.path.exists(model_path):
-        print(f"Loading existing model for trial {trial.number} from {model_path}")
-        model = SAC.load(model_path, env)
-        timesteps = trial.user_attrs.get('timesteps', 0)
-        return model, timesteps
+    if  model_path is not None:
+        if os.path.exists(model_path):
+            print(f"Loading existing model for trial {trial.number} from {model_path}")
+            model = SAC.load(model_path, env)
+            timesteps = trial.user_attrs.get('timesteps', 0)
+            return model, timesteps
     
     return None, 0
 
@@ -153,6 +155,7 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
     best_reward = -float('inf')
     
     model, timesteps = load_model(trial, env)
+    model.verbose = 1
     if model is None:
         print(f'Model is None, creating new model for trial {trial.number}.')
         model = SAC(
@@ -162,7 +165,7 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
             gamma=params['gamma'],
             learning_rate=params['lr'],
             policy_kwargs=params['policy_kwargs'],
-            verbose=0,
+            verbose=1,
             ent_coef=params['ent_coef'],
             tau=params['tau'],
             buffer_size=params['buffer_size'],
@@ -173,29 +176,29 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
         timesteps = 0
 
     lr_decay = 0.9
+    current_lr = params['lr']
     
-    for timestep in range(timesteps, total_timesteps, steps):
-
-        
-        new_lr = model.learning_rate * lr_decay
-        model.learning_rate = new_lr
-        model.policy.optimizer.param_groups[0]['lr'] = new_lr
-
-        print(f'Learning rate decayed to {new_lr:.2e} at timestep {timestep}.')
+    while timesteps < total_timesteps:
 
         train_time = time.time()
-        model.learn(total_timesteps=timestep, reset_num_timesteps=False)
+        model.learn(total_timesteps=steps, reset_num_timesteps=False)
         train_time_stop = time.time() - train_time
 
         eval_time = time.time()
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=200, deterministic=True)
+        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=2, deterministic=True)
         eval_time_stop = time.time() - eval_time
         
-        print(f'Timestep {int(timestep)} Mean reward: {mean_reward:.2f} +/- {std_reward:.2f} in {train_time_stop:.1f} sec. Eval time: {eval_time_stop:.1f} sec.')        
+        print(f'Timestep {int(timesteps)} Mean reward: {mean_reward:.2f} +/- {std_reward:.2f} in {train_time_stop:.1f} sec. Eval time: {eval_time_stop:.1f} sec.')   
+        timesteps += steps
+
         if mean_reward > best_reward:
             print(f'New best reward: {mean_reward:.2f} > {best_reward:.2f} saving model.')
             best_reward = mean_reward
             model.save(best_model_path)
+        
+        current_lr *= lr_decay
+        model.lr_schedule = lambda _: current_lr
+        print(f'New learning rate: {current_lr:.6f}')
 
         
     env.close()
@@ -272,11 +275,11 @@ study = optuna.create_study(
     sampler=optuna.samplers.TPESampler(multivariate=True, warn_independent_sampling = False)
 )
 
-for idx, trial in enumerate(last_trials):
-    print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
-    study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
+# for idx, trial in enumerate(last_trials):
+#     print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
+#     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
-study.optimize(objective, n_trials=1000, timeout=3600*4)
+# study.optimize(objective, n_trials=1000, timeout=1)
 
 top_trials = sorted([t for t in study.trials if t.state != optuna.trial.TrialState.PRUNED], key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:3]
 
