@@ -145,12 +145,11 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     return mean_reward
 
 def save_video_of_model(params, trial, total_timesteps, name='base', steps = 40000):
-    original_trial_number = trial.user_attrs.get('original_trial_number', trial.number)
     
     env = create_env("Humanoid-v4", n_envs=16)
     params['policy_kwargs'] = build_policy_kwargs(params)
 
-    best_model_path = f"./models/{name}_trial_{original_trial_number}.zip"
+    best_model_path = f"./models/{name}_trial_{trial.number}_long.zip"
     best_reward = -float('inf')
     
     model, timesteps = load_model(trial, env)
@@ -161,7 +160,7 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
             env,
             batch_size=params['batch_size'],
             gamma=params['gamma'],
-            learning_rate=params['lr'] * 0.5,
+            learning_rate=params['lr'],
             policy_kwargs=params['policy_kwargs'],
             verbose=0,
             ent_coef=params['ent_coef'],
@@ -172,8 +171,18 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
             gradient_steps=params['gradient_steps']
         )
         timesteps = 0
+
+    lr_decay = 0.9
     
     for timestep in range(timesteps, total_timesteps, steps):
+
+        
+        new_lr = model.learning_rate * lr_decay
+        model.learning_rate = new_lr
+        model.policy.optimizer.param_groups[0]['lr'] = new_lr
+
+        print(f'Learning rate decayed to {new_lr:.2e} at timestep {timestep}.')
+
         train_time = time.time()
         model.learn(total_timesteps=timestep, reset_num_timesteps=False)
         train_time_stop = time.time() - train_time
