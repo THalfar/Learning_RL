@@ -198,4 +198,4 @@ study = optuna.create_study(
     sampler=optuna.samplers.CmaEsSampler(warn_independent_sampling = False)
 )
 
-study.optimize(objective, n_trials=420)
+study.optimize(objective, n_trials=14200)

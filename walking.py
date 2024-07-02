@@ -222,21 +222,20 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
 
 def objective(trial):
 
-    total_timesteps = int(3e5)
+    total_timesteps = int(2e5)
 
     params = {
         'batch_size': trial.suggest_int('batch_size', 256, 2000, log=True),
         'gamma': trial.suggest_float('gamma', 0.98, 0.999999),
         'lr': trial.suggest_float('lr', 1e-6, 1e-3, log=True),        
         'tau': trial.suggest_float('tau', 1e-3, 1.0, log=True),
-        'ent_coef': trial.suggest_float('ent_coef', 0.3, 0.7),
+        'ent_coef': trial.suggest_float('ent_coef', 0.1, 0.7),
         'buffer_size': trial.suggest_int('buffer_size', int(1e4), int(1e6), log=True),
         'learning_starts': trial.suggest_int('learning_starts', 100, 10000, log=True),
         'train_freq': trial.suggest_int('train_freq', 10, 60),
         'gradient_steps': trial.suggest_int('gradient_steps', 70, 150),
         'actor_network_depth': trial.suggest_int('actor_network_depth', 1, 3),
-        'critic_network_depth': trial.suggest_int('critic_network_depth', 1, 3)
-        
+        'critic_network_depth': trial.suggest_int('critic_network_depth', 1, 3)        
     }
 
     for i in range(params['actor_network_depth']):
@@ -245,32 +244,32 @@ def objective(trial):
     for i in range(params['critic_network_depth']):
         params[f'critic_layer_{i+1}_neurons'] = trial.suggest_int(f'critic_layer_{i+1}_neurons', 32, 1024, log=True)
     
-    mean_reward = train_and_evaluate(params, total_timesteps=total_timesteps, trial=trial)
+    reward = train_and_evaluate(params, total_timesteps=total_timesteps, trial=trial)
 
-    return mean_reward
+    return reward
 
-previous_study = optuna.load_study(study_name='6_25_sac_slope', storage='sqlite:///gymnasium_walking_humanoid.db')
+previous_study = optuna.load_study(study_name='6_25_sac_slope', storage='sqlite:///gymnasium_humanoid_walking.db')
 
 last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
                     key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:20]
 
-storage = optuna.storages.RDBStorage('sqlite:///gymnasium_walking_humanoid.db')
+storage = optuna.storages.RDBStorage('sqlite:///gymnasium_humanoid_walking.db')
 study = optuna.create_study(
-    study_name='6_30_sac_hyperband_enque3k',
+    study_name='7_02_sac_walking_best_slopes',
     direction='maximize',
-    pruner=optuna.pruners.HyperbandPruner(),
+    pruner=optuna.pruners.MedianPruner(n_startup_trials=5),
     storage=storage,
     load_if_exists=True,
     sampler=optuna.samplers.TPESampler(multivariate=True, warn_independent_sampling = False)
 )
 
 for idx, trial in enumerate(last_trials):
-    print(f'Trial {trial.number} params {trial.params} value {trial.value}')
+    print(f'Trial {trial.number} params {trial.params} value {trial.value} user attrs {trial.user_attrs}')
     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
-study.optimize(objective, n_trials=420)
+study.optimize(objective, n_trials=100)
 
-top_trials = sorted([t for t in study.trials if t.state != optuna.trial.TrialState.PRUNED], key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:5]
+top_trials = sorted([t for t in study.trials if t.state != optuna.trial.TrialState.PRUNED], key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:3]
 
 for trial in top_trials:
     print(f"Training top trial {trial.number} with long training duration...")
