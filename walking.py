@@ -48,10 +48,10 @@ def build_policy_kwargs(params):
 
 
 def save_model(model, trial, timesteps):
-    original_trial_number = trial.user_attrs.get('original_trial_number', trial.number)
-    model_path = f"./models/trial_{original_trial_number}.zip"
-    # print(f"Saving model for trial {original_trial_number} to {model_path}")
-    trial.set_user_attr(model_path, model_path)
+    
+    model_path = f"./models/{trial.study.study_name}_{trial.number}.zip"
+    print(f"Saving model to {model_path}")
+    trial.set_user_attr('model_path', model_path)
     trial.set_user_attr('timesteps', timesteps)
     model.save(model_path)
     
@@ -59,15 +59,20 @@ def save_model(model, trial, timesteps):
 def load_model(trial, env):
     
     # FIX for the key=value bug 
-    for key, value in trial.user_attrs.items():
-        if key == value and key.startswith('./models/'):
-            model_path = value
-
+    if 'model_path' not in trial.user_attrs:
+        for key, value in trial.user_attrs.items():
+            if key == value and key.startswith('./models/'):
+                model_path = value
+                break
+    else:
+        model_path = trial.user_attrs.get('model_path', None)
+        
     if os.path.exists(model_path):
         print(f"Loading existing model for trial {trial.number} from {model_path}")
         model = SAC.load(model_path, env)
         timesteps = trial.user_attrs.get('timesteps', 0)
         return model, timesteps
+    
     return None, 0
 
 
@@ -250,7 +255,7 @@ last_trials = sorted([t for t in previous_study.trials if t.state != optuna.tria
 
 storage = optuna.storages.RDBStorage('sqlite:///gymnasium_humanoid_walking.db')
 study = optuna.create_study(
-    study_name='7_02_sac_walking_best_slope_load_test1',
+    study_name='7_02_sac_walking_best_slope_load_test3',
     direction='maximize',
     pruner=optuna.pruners.MedianPruner(n_startup_trials=5),
     storage=storage,
@@ -262,7 +267,7 @@ for idx, trial in enumerate(last_trials):
     print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
-study.optimize(objective, n_trials=100)
+study.optimize(objective, n_trials=1000, timeout=3600*4)
 
 top_trials = sorted([t for t in study.trials if t.state != optuna.trial.TrialState.PRUNED], key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:3]
 
