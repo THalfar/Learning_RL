@@ -48,10 +48,10 @@ def build_policy_kwargs(params):
 
 
 def save_model(model, trial, timesteps):
-    original_trial_number = trial.user_attrs.get('original_trial_number', trial.number)
-    model_path = f"./models/{trial.study.study_name}_{original_trial_number}.zip"
-    print(f"Saving model for trial {original_trial_number} to {model_path}")
-    trial.set_user_attr(model_path, model_path)
+    
+    model_path = f"./models/{trial.study.study_name}_{trial.number}.zip"
+    print(f"Saving model for trial to {model_path}")
+    trial.set_user_attr('model_path', model_path)
     trial.set_user_attr('timesteps', timesteps)
     model.save(model_path)
     

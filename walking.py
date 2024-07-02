@@ -57,8 +57,12 @@ def save_model(model, trial, timesteps):
     
 
 def load_model(trial, env):
-    original_trial_number = trial.user_attrs.get('original_trial_number', trial.number)
-    model_path = f"./models/trial_{original_trial_number}.zip"
+    
+    # FIX for the key=value bug 
+    for key, value in trial.user_attrs.items():
+        if key == value and key.startswith('./models/'):
+            model_path = value
+
     if os.path.exists(model_path):
         print(f"Loading existing model for trial {trial.number} from {model_path}")
         model = SAC.load(model_path, env)
@@ -66,19 +70,12 @@ def load_model(trial, env):
         return model, timesteps
     return None, 0
 
+
 def train_and_evaluate(params, total_timesteps, trial=None):
 
     env = create_env("Humanoid-v4", n_envs=16)
     params['policy_kwargs'] = build_policy_kwargs(params)
     
-    # Set or get original trial number
-    if 'original_trial_number' not in trial.user_attrs:
-        trial.set_user_attr('original_trial_number', trial.number)
-        print(f'Trial {trial.number} - original trial number set to {trial.number}.')
-    else:
-        print(f'Trial {trial.number} - original trial number already set to {trial.user_attrs["original_trial_number"]}.')
-    
-    # Load existing model if it exists
     model, timesteps = load_model(trial, env)
     if model is None:
         model = SAC(
@@ -117,9 +114,6 @@ def train_and_evaluate(params, total_timesteps, trial=None):
 
         print(f'Trial {trial.number} timestep {timesteps} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {mean_reward:.1f} training time: {int(learn_time_stop)} sec. Eval time: {int(eval_time_stop)} sec.')        
 
-        # Save the model and the number of timesteps after each evaluation
-        save_model(model, trial, timesteps)
-        
         trial.report(mean_reward, timesteps)
         
         if trial.should_prune():
@@ -132,6 +126,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             raise optuna.exceptions.TrialPruned()
     
+    save_model(model, trial, timesteps)
     print(f'Total time taken for trial {trial.number}: {int(time.time() - total_time)/ 60:.1f} min.')    
     print(f'Total mean reward this training: {np.mean(rewards):.1f}')
     print(f'Total timesteps: {timesteps}')
@@ -248,14 +243,14 @@ def objective(trial):
 
     return reward
 
-previous_study = optuna.load_study(study_name='6_25_sac_slope', storage='sqlite:///gymnasium_humanoid_walking.db')
+previous_study = optuna.load_study(study_name='7_01_sac_slope', storage='sqlite:///gymnasium_humanoid_walking.db')
 
 last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
                     key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:20]
 
 storage = optuna.storages.RDBStorage('sqlite:///gymnasium_humanoid_walking.db')
 study = optuna.create_study(
-    study_name='7_02_sac_walking_best_slopes',
+    study_name='7_02_sac_walking_best_slope_load_test1',
     direction='maximize',
     pruner=optuna.pruners.MedianPruner(n_startup_trials=5),
     storage=storage,
@@ -264,7 +259,7 @@ study = optuna.create_study(
 )
 
 for idx, trial in enumerate(last_trials):
-    print(f'Trial {trial.number} params {trial.params} value {trial.value} user attrs {trial.user_attrs}')
+    print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
 study.optimize(objective, n_trials=100)
