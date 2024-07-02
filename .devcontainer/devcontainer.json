@@ -1,0 +1,17 @@
+{
+  "name": "My Project",
+  "context": "..",
+  "dockerFile": "../Dockerfile",
+  "runArgs": ["--gpus", "all"],
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind"
+  ],
+  "settings": {
+    "terminal.integrated.shell.linux": "/bin/bash"
+  },
+  "extensions": [
+    "ms-python.python",
+    "ms-azuretools.vscode-docker"
+  ]
+}
