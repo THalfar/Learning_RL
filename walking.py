@@ -2,7 +2,7 @@ import gymnasium as gym
 import numpy as np
 from stable_baselines3 import SAC
 import optuna
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
 import moviepy.editor as mpy
 import tensorflow as tf
@@ -12,21 +12,10 @@ import torch
 import os
 from stable_baselines3.common.callbacks import BaseCallback
 
-
-print("TensorFlow version:", tf.__version__)
-physical_devices = tf.config.list_physical_devices('GPU')
-if len(physical_devices) > 0:
-    print("GPU is available")
-    for device in physical_devices:
-        print(device)
-else:
-    print("No GPU available, using CPU")
-
-
 def create_env(env_id, n_envs=1):
     def make_env():
         return gym.make(env_id)
-    return DummyVecEnv([make_env] * n_envs)
+    return SubprocVecEnv([make_env] * n_envs)
 
 
 def build_policy_kwargs(params):
@@ -58,15 +47,18 @@ def save_model(model, trial, timesteps):
     
 
 def load_model(trial, env):
+
+    model_path = None
     
     # FIX for the key=value bug 
     if 'model_path' not in trial.user_attrs:
         for key, value in trial.user_attrs.items():
             if key == value and key.startswith('./models/'):
-                trial.user_attrs.set('model_path', value)
-                break                   
-    
-    model_path = trial.user_attrs.get('model_path', None)
+                model_path = trial.user_attrs.get('model_path', value)
+                break         
+
+    if model_path is None:
+        model_path = trial.user_attrs.get('model_path', None)
         
     if  model_path is not None:
         if os.path.exists(model_path):
@@ -74,13 +66,19 @@ def load_model(trial, env):
             model = SAC.load(model_path, env)
             timesteps = trial.user_attrs.get('timesteps', 0)
             return model, timesteps
+        else:
+            print(f'Model path {model_path} does not exist. Creating new model for trial {trial.number}.')
     
     return None, 0
 
 
 def train_and_evaluate(params, total_timesteps, trial=None):
 
-    env = create_env("Humanoid-v4", n_envs=16)
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+
+    env = create_env("Humanoid-v4", n_envs=20)
     params['policy_kwargs'] = build_policy_kwargs(params)
     
     model, timesteps = load_model(trial, env)
@@ -102,6 +100,8 @@ def train_and_evaluate(params, total_timesteps, trial=None):
         )
         timesteps = 0
     
+    step = 20000
+    
     rewards = []
 
     total_time = time.time()
@@ -109,8 +109,8 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     while timesteps < total_timesteps:
 
         learn_time_start = time.time()        
-        model.learn(total_timesteps=20000, reset_num_timesteps=False)
-        timesteps += 20000
+        model.learn(total_timesteps=step, reset_num_timesteps=False)
+        timesteps += step
         learn_time_stop = time.time() - learn_time_start
         
         eval_time_start = time.time()
@@ -119,7 +119,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
         rewards.append(reward)
         mean_reward = np.mean(rewards[-3:])
 
-        print(f'Trial {trial.number} timestep {timesteps} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {mean_reward:.1f} training time: {int(learn_time_stop)} sec. Eval time: {int(eval_time_stop)} sec.')        
+        print(f'Trial {trial.number} timestep {timesteps} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {mean_reward:.1f} training time: {learn_time_stop:.1f} sec with {step/learn_time_stop:.1f} fps. Eval time: {eval_time_stop:.1f} sec.')        
 
         trial.report(mean_reward, timesteps)
         
@@ -146,16 +146,20 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     
     return mean_reward
 
-def save_video_of_model(params, trial, total_timesteps, name='base', steps = 40000):
+
+def save_video_of_model(params, trial, total_timesteps,  steps = 40000, name='humanoid'):
+
+    gc.collect()
+    torch.cuda.empty_cache()
     
-    env = create_env("Humanoid-v4", n_envs=16)
+    env = create_env("Humanoid-v4", n_envs=20)
     params['policy_kwargs'] = build_policy_kwargs(params)
 
     best_model_path = f"./models/{name}_trial_{trial.number}_long.zip"
     best_reward = -float('inf')
     
     model, timesteps = load_model(trial, env)
-    model.verbose = 1
+    
     if model is None:
         print(f'Model is None, creating new model for trial {trial.number}.')
         model = SAC(
@@ -175,8 +179,10 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
         )
         timesteps = 0
 
-    lr_decay = 0.9
+    lr_decay = 0.95
     current_lr = params['lr']
+
+    total_time = time.time()
     
     while timesteps < total_timesteps:
 
@@ -185,25 +191,28 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
         train_time_stop = time.time() - train_time
 
         eval_time = time.time()
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=2, deterministic=True)
+        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=200, deterministic=True)
         eval_time_stop = time.time() - eval_time
         
-        print(f'Timestep {int(timesteps)} Mean reward: {mean_reward:.2f} +/- {std_reward:.2f} in {train_time_stop:.1f} sec. Eval time: {eval_time_stop:.1f} sec.')   
         timesteps += steps
-
+        print(f'Timestep {int(timesteps)} Mean reward: {mean_reward:.2f} +/- {std_reward:.2f} in {train_time_stop:.1f} sec with {steps/train_time_stop:.1f} fps. Eval time: {eval_time_stop:.1f} sec.')   
+        
         if mean_reward > best_reward:
-            print(f'New best reward: {mean_reward:.2f} > {best_reward:.2f} saving model.')
+            print(f'New best reward: {mean_reward:.2f} > {best_reward:.2f} saving model to {best_model_path}')
             best_reward = mean_reward
             model.save(best_model_path)
         
-        current_lr *= lr_decay
-        model.lr_schedule = lambda _: current_lr
-        print(f'New learning rate: {current_lr:.6f}')
+        # current_lr *= lr_decay
+        # model.lr_schedule = lambda _: current_lr
+        # print(f'New learning rate: {current_lr:.6f}')
 
-        
+
+    print(f'Total time taken for trial {trial.number}: {int(time.time() - total_time)/ 60:.1f} min.')
+    print(f'Total mean reward this training: {best_reward:.1f}')
+
     env.close()
     
-    eval_env = gym.make("Humanoid-v4", render_mode='rgb_array')  
+    eval_env = gym.make("Pusher-v4", render_mode='rgb_array')  
     obs, info = eval_env.reset()
     frames = []    
     total_reward = 0.0
@@ -234,7 +243,7 @@ def save_video_of_model(params, trial, total_timesteps, name='base', steps = 400
 
 def objective(trial):
 
-    total_timesteps = int(2e5)
+    total_timesteps = int(4e5)
 
     params = {
         'batch_size': trial.suggest_int('batch_size', 256, 2000, log=True),
@@ -260,36 +269,41 @@ def objective(trial):
 
     return reward
 
-previous_study = optuna.load_study(study_name='7_01_sac_slope', storage='sqlite:///gymnasium_humanoid_walking.db')
 
-last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
-                    key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:20]
+if __name__ == '__main__':
 
-storage = optuna.storages.RDBStorage('sqlite:///gymnasium_humanoid_walking.db')
-study = optuna.create_study(
-    study_name='7_02_sac_walking_best_slope_load_test3',
-    direction='maximize',
-    pruner=optuna.pruners.MedianPruner(n_startup_trials=5),
-    storage=storage,
-    load_if_exists=True,
-    sampler=optuna.samplers.TPESampler(multivariate=True, warn_independent_sampling = False)
-)
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  
 
-# for idx, trial in enumerate(last_trials):
-#     print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
-#     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
+            
+    previous_study = optuna.load_study(study_name='7_01_sac_slope', storage='sqlite:///gymnasium_humanoid_walking.db')
 
-# study.optimize(objective, n_trials=1000, timeout=1)
+    last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
+                        key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:10]
 
-top_trials = sorted([t for t in study.trials if t.state != optuna.trial.TrialState.PRUNED], key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:3]
+    storage = optuna.storages.RDBStorage('sqlite:///gymnasium_humanoid_walking.db')
+    study = optuna.create_study(
+        study_name='7_05_sac_walking',
+        direction='maximize',
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_min_trials = 10),
+        storage=storage,
+        load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(multivariate=True, warn_independent_sampling = False)
+    )
 
-for trial in top_trials:
-    print(f"Training top trial {trial.number} with long training duration...")
-    print(f'Value: {trial.value:.5f}')
-    print(f'Params: {trial.params}')
-    
-    params = trial.params
-    params['policy_kwargs'] = build_policy_kwargs(params)
+    for idx, trial in enumerate(last_trials):
+        print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
+        study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
-    total_reward = save_video_of_model(params, trial, total_timesteps=int(1e6), name=study.study_name)
-    print(f"Video saved for trial {trial.number} with total reward: {total_reward:.2f}")
+    study.optimize(objective, n_trials=10000, timeout= 30 * 3600)
+
+    top_trials = sorted([t for t in study.trials if t.state != optuna.trial.TrialState.PRUNED], key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:10]
+
+    for trial in top_trials:
+        print(f"Training top trial {trial.number} with long training duration...")
+        print(f'Value: {trial.value:.5f}')
+        print(f'Params: {trial.params}')
+        
+        params = trial.params
+        
+        total_reward = save_video_of_model(params, trial, total_timesteps=int(3e6), name = '7_02_sac_walking_best_slope_load_test5')
+        print(f"Video saved for trial {trial.number} with total reward: {total_reward:.2f}")

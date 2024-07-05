@@ -2,7 +2,7 @@ import gymnasium as gym
 import numpy as np
 from stable_baselines3 import SAC
 import optuna
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
 import moviepy.editor as mpy
 import tensorflow as tf
@@ -12,20 +12,10 @@ import torch
 import os
 
 
-print("TensorFlow version:", tf.__version__)
-physical_devices = tf.config.list_physical_devices('GPU')
-if len(physical_devices) > 0:
-    print("GPU is available")
-    for device in physical_devices:
-        print(device)
-else:
-    print("No GPU available, using CPU")
-
-
 def create_env(env_id, n_envs=1):
     def make_env():
         return gym.make(env_id)
-    return DummyVecEnv([make_env] * n_envs)
+    return SubprocVecEnv([make_env] * n_envs)
 
 
 def build_policy_kwargs(params):
@@ -68,7 +58,7 @@ def load_model(trial, env):
 
 def train_and_evaluate(params, total_timesteps, trial=None):
 
-    env = create_env("Humanoid-v4", n_envs=20)
+    env = create_env("Pusher-v4", n_envs=12)
     params['policy_kwargs'] = build_policy_kwargs(params)
    
     # Load existing model if it exists
@@ -94,12 +84,13 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     rewards_zero = [0]
     rewards = []
     total_time = time.time()
+    steps = 20000
     
     while True:
 
         learn_time_start = time.time()        
-        model.learn(total_timesteps=10000, reset_num_timesteps=False)
-        timesteps += 10000
+        model.learn(total_timesteps=steps, reset_num_timesteps=False)
+        timesteps += steps
         learn_time_stop = time.time() - learn_time_start
 
         # Breaks if total timesteps reached so that last evaluation is done
@@ -115,7 +106,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
         total_mean = np.mean(rewards)
         slope, _ = np.polyfit(range(len(rewards_zero)), rewards_zero, 1)
 
-        print(f'Timestep {timesteps} slope: {slope:.2f} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {running_mean:.1f} total mean: {total_mean:.1f} training time: {int(learn_time_stop)} sec. Eval time: {int(eval_time_stop)} sec.')        
+        print(f'Timestep {timesteps} slope: {slope:.2f} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {running_mean:.1f} total mean: {total_mean:.1f} training time: {int(learn_time_stop)} sec with {steps/learn_time_stop:.1f} fps. . Eval time: {int(eval_time_stop)} sec.')        
 
         trial.report(slope, timesteps)
         
@@ -160,12 +151,15 @@ def train_and_evaluate(params, total_timesteps, trial=None):
 
 
 def objective(trial):
+    
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
-    total_timesteps = int(5e4)
+    total_timesteps = int(1e5)
 
     params = {
         'batch_size': trial.suggest_int('batch_size', 256, 2000, log=True),
-        'gamma': trial.suggest_float('gamma', 0.98, 0.999999),
+        'gamma': trial.suggest_float('gamma', 0.95, 0.999999),
         'lr': trial.suggest_float('lr', 1e-6, 1e-3, log=True),        
         'tau': trial.suggest_float('tau', 1e-3, 1.0, log=True),
         'ent_coef': trial.suggest_float('ent_coef', 0.1, 0.7),
@@ -187,15 +181,16 @@ def objective(trial):
 
     return reward
 
+if __name__ == '__main__':
+        
+    storage = optuna.storages.RDBStorage('sqlite:///gymnasium_pusher.db')
+    study = optuna.create_study(
+        study_name='7_04_sac_slope_testi1',
+        direction='maximize',
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_min_trials=10),
+        storage=storage,
+        load_if_exists=True,
+        sampler=optuna.samplers.CmaEsSampler(warn_independent_sampling = False)
+    )
 
-storage = optuna.storages.RDBStorage('sqlite:///gymnasium_humanoid_walking.db')
-study = optuna.create_study(
-    study_name='7_01_sac_slope',
-    direction='maximize',
-    pruner=optuna.pruners.MedianPruner(n_startup_trials=10),
-    storage=storage,
-    load_if_exists=True,
-    sampler=optuna.samplers.CmaEsSampler(warn_independent_sampling = False)
-)
-
-study.optimize(objective, n_trials=14200)
+    study.optimize(objective, n_trials=14200)
