@@ -2,7 +2,7 @@ import gymnasium as gym
 import numpy as np
 from stable_baselines3 import SAC
 import optuna
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
 import moviepy.editor as mpy
 import tensorflow as tf
@@ -10,7 +10,7 @@ import time
 import gc
 import torch
 import os
-from stable_baselines3.common.callbacks import BaseCallback
+
 
 def create_env(env_id, n_envs=1):
     def make_env():
@@ -326,7 +326,7 @@ def train_sac_baseline(env_id="Hopper-v4", total_timesteps=300000):
 
     env.close()
 
-    eval_env = gym.make("Hopper-v4", render_mode='rgb_array')  
+    eval_env = gym.make("HumanoidStandup-v4", render_mode='rgb_array')  
     obs, info = eval_env.reset()
     frames = []    
     total_reward = 0.0    
@@ -366,7 +366,7 @@ def objective(trial):
         'batch_size': trial.suggest_int('batch_size', 128, 2048, log=True),
         'gamma_eps': trial.suggest_float('gamma_eps', 1e-5, 0.1, log = True),
         'lr': trial.suggest_float('lr', 1e-5, 1e-1, log=True),        
-        'tau': trial.suggest_float('tau', 1e-3, 0.3, log=True),
+        'tau': trial.suggest_float('tau', 1e-5, 0.1, log=True),
         'ent_coef': trial.suggest_float('ent_coef', 0.1, 0.8),
         # 'buffer_size': trial.suggest_int('buffer_size', int(1e4), int(5e5), log=True),
         # 'learning_starts': trial.suggest_int('learning_starts', 100, 10000, log=True),
@@ -398,10 +398,11 @@ if __name__ == '__main__':
     # last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
     #                     key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:5]
 
-    # best_reward = train_sac_baseline()
-    # print(f'Baseline reward: {best_reward:.1f}')
+    best_reward = train_sac_baseline()
+    print(f'Baseline reward: {best_reward:.1f}')
 
-    study_name='7_09_sac_lessparams_test8'
+    # study_name='7_09_sac_lessparams_test8'
+    study_name = 'testi'
 
     sampler = optuna.samplers.TPESampler(
     consider_prior=True,
