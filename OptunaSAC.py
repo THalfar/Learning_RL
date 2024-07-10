@@ -18,8 +18,8 @@ class OptunaSAC:
 
         self.env_id = env_id
         self.total_timesteps = total_timesteps
-        self.n_envs = 20
-        self.n_eval_episodes = 20
+        self.n_envs = 22
+        self.n_eval_episodes = 50
         self.total_timesteps = total_timesteps
         self.step = step
         self.optimization_time = optimization_time
@@ -64,7 +64,7 @@ class OptunaSAC:
     def create_env(self):
         def make_env():
             return gym.make(self.env_id)
-        return SubprocVecEnv([make_env for _ in range(self.n_envs)], start_method='fork')
+        return SubprocVecEnv([make_env for _ in range(self.n_envs)])
     
         
     def train_and_evaluate(self, params, trial):
@@ -97,18 +97,26 @@ class OptunaSAC:
             current_lr = params['lr']
         
         while timestep < self.total_timesteps:
-            # print(f'Trial {trial.number} timestep {timestep} started.')
-            learn_time_start = time.time()        
-            model.learn(total_timesteps=self.step, reset_num_timesteps=False)
-            timestep += self.step
-            learn_time_stop = time.time() - learn_time_start
-            # print(f'step {timestep} done.')
             
-            eval_time_start = time.time()
-            reward, std_reward = evaluate_policy(model, env, n_eval_episodes= self.n_eval_episodes, deterministic=True)
-            eval_time_stop = time.time() - eval_time_start        
-            rewards.append(reward)
-            mean_reward = np.mean(rewards[-3:])
+            try:  
+                learn_time_start = time.time()      
+                model.learn(total_timesteps=self.step, reset_num_timesteps=False) 
+                timestep += self.step
+                learn_time_stop = time.time() - learn_time_start
+                eval_time_start = time.time()
+                reward, std_reward = evaluate_policy(model, env, n_eval_episodes= self.n_eval_episodes, deterministic=True)
+                eval_time_stop = time.time() - eval_time_start        
+                rewards.append(reward)
+                mean_reward = np.mean(rewards[-3:])
+            except Exception as e:
+                print(f'Error in trial {trial.number} timestep {timestep}.')
+                print(e)
+                env.close()
+                del model
+                del env
+                gc.collect()
+                torch.cuda.empty_cache()
+                return -np.inf
 
             if self.verbose > 0:
                 print(f'Trial {trial.number} timestep {timestep} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {mean_reward:.1f} training time: {learn_time_stop:.1f} sec with {self.step/learn_time_stop:.1f} fps. Eval time: {eval_time_stop:.1f} sec.')        
@@ -126,20 +134,31 @@ class OptunaSAC:
             if trial.should_prune():
                 if self.verbose > 0:
                     print(f'Trial {trial.number} pruned at timestep {timestep}.')                
-                    print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
+                    print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')     
+                env.close()
+                del model
+                del env
+                gc.collect()
+                torch.cuda.empty_cache()    
                 raise optuna.exceptions.TrialPruned()
             
             if learn_time_stop > self.max_step_time:
                 if self.verbose > 0:
                     print(f'Trial {trial.number} exceeded limit. Pruning.')
-                    print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
+                    print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')   
+                env.close()
+                del model
+                del env
+                gc.collect()
+                torch.cuda.empty_cache()     
                 raise optuna.exceptions.TrialPruned()
                         
             if params.get('lr_reduction', False):
                 current_lr *= params['lr_reduction']
                 model.lr_schedule = lambda _: current_lr
-                # if self.verbose > 0:
-                #     print(f'New learning rate: {current_lr:.8f}')
+                
+          
+        
         
         if self.verbose > 0:
             print(f'Total time taken for trial {trial.number}: {int(time.time() - total_time)/ 60:.1f} min.')    
@@ -149,7 +168,7 @@ class OptunaSAC:
         if best_reward > self.best_reward_all:
             self.best_reward_all = best_reward
             if self.verbose > 0:
-                print(f'New best reward for all trials: {best_reward:.2f}')            
+                print(f'### New best reward for this run ###: {best_reward:.1f}')            
             self.save_video_of_model(model_path, trial.number)
         
         env.close()
@@ -201,8 +220,6 @@ class OptunaSAC:
     
     def objective(self, trial):
 
-        gc.collect()
-        torch.cuda.empty_cache()
         params = self.suggest_params(trial)
         return self.train_and_evaluate(params, trial)
     
@@ -225,7 +242,7 @@ class OptunaSAC:
         study = optuna.create_study(
             study_name= self.study_name,
             direction='maximize',
-            pruner=optuna.pruners.MedianPruner(n_startup_trials = 10, n_min_trials = 10),
+            pruner=optuna.pruners.MedianPruner(n_startup_trials = 20, n_min_trials = 20),
             storage=storage,
             load_if_exists=True,
             sampler=sampler
@@ -236,7 +253,7 @@ class OptunaSAC:
 
 if __name__ == '__main__':
     
-    optuna_sac = OptunaSAC(study_name="7_09_testi17", optimization_time=3600*1)
+    optuna_sac = OptunaSAC(env_id='HumanoidStandup-v4',study_name="7_09_standup", optimization_time=3600*20, step=50000, total_timesteps=600000, verbose=1)
     optuna_sac.optimize()
     
 
