@@ -25,7 +25,7 @@ class OptunaSAC:
         self.optimization_time = optimization_time
         self.verbose = verbose
         self.study_name = study_name
-        self.max_step_time = 60
+        self.max_step_time = 360
         self.sql_name = 'sqlite:///class_test.db'
         
         self.param_choose = {
@@ -46,17 +46,17 @@ class OptunaSAC:
         params = {}
 
         if self.param_choose.get('batch_size', False):
-            params['batch_size'] = trial.suggest_int('batch_size', 64, 2048, log=True)
+            params['batch_size'] = trial.suggest_int('batch_size', 64, 3000, log=True)
         if self.param_choose.get('gamma_eps', False):
-            params['gamma_eps'] = trial.suggest_float('gamma_eps', 1e-5, 0.1, log=True)
+            params['gamma_eps'] = trial.suggest_float('gamma_eps', 1e-5, 1e-2, log=True)
         if self.param_choose.get('lr', False):
-            params['lr'] = trial.suggest_float('lr', 1e-5, 1e-1, log=True)
+            params['lr'] = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
         if self.param_choose.get('tau', False):
             params['tau'] = trial.suggest_float('tau', 1e-5, 0.1, log=True)
         if self.param_choose.get('ent_start', False):
             params['ent_start'] = trial.suggest_float('ent_start', 0.1, 0.9)
         if self.param_choose.get('lr_reduction', False):
-            params['lr_reduction'] = trial.suggest_float('lr_reduction', 0.9, 1.0)   
+            params['lr_reduction'] = trial.suggest_float('lr_reduction', 0.5, 1.0)   
 
         return params 
 
@@ -119,6 +119,7 @@ class OptunaSAC:
                 return -np.inf
 
             if self.verbose > 0:
+                model.get_parameters()
                 print(f'Trial {trial.number} timestep {timestep} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {mean_reward:.1f} training time: {learn_time_stop:.1f} sec with {self.step/learn_time_stop:.1f} fps. Eval time: {eval_time_stop:.1f} sec.')        
 
             trial.report(mean_reward, timestep)
@@ -204,7 +205,7 @@ class OptunaSAC:
 
         eval_env.close()
 
-        video_path = f'videos/{self.study_name}_{self.env_id}_{trial_num}_{total_reward:.0f}.mp4'
+        video_path = f'videos/{self.env_id}_{total_reward:.0f}_{self.study_name}_{trial_num}_.mp4'
 
         clip = mpy.ImageSequenceClip(frames, fps=30)
         clip.write_videofile(video_path, codec='libx264')
@@ -242,7 +243,7 @@ class OptunaSAC:
         study = optuna.create_study(
             study_name= self.study_name,
             direction='maximize',
-            pruner=optuna.pruners.MedianPruner(n_startup_trials = 20, n_min_trials = 20),
+            pruner=optuna.pruners.MedianPruner(n_startup_trials = 10, n_min_trials = 10),
             storage=storage,
             load_if_exists=True,
             sampler=sampler
@@ -253,7 +254,7 @@ class OptunaSAC:
 
 if __name__ == '__main__':
     
-    optuna_sac = OptunaSAC(env_id='HumanoidStandup-v4',study_name="7_09_standup", optimization_time=3600*20, step=50000, total_timesteps=600000, verbose=1)
+    optuna_sac = OptunaSAC(env_id='HumanoidStandup-v4',study_name="7_13_standup", optimization_time=3600*84, step=200000, total_timesteps=2000000, verbose=1)
     optuna_sac.optimize()
     
 

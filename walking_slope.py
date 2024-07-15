@@ -10,6 +10,13 @@ import time
 import gc
 import torch
 import os
+import signal
+
+def signal_handler(signal, frame):
+    print('You pressed Ctrl+C! Stopping the study...')
+    study.stop()
+    exit(0)
+
 
 
 def create_env(env_id, n_envs=1):
@@ -58,33 +65,25 @@ def load_model(trial, env):
 
 def train_and_evaluate(params, total_timesteps, trial=None):
 
-    env = create_env("Pusher-v4", n_envs=12)
-    params['policy_kwargs'] = build_policy_kwargs(params)
-   
-    # Load existing model if it exists
+    env = create_env("HumanoidStandup-v4", n_envs=22)
+    
     model, timesteps = load_model(trial, env)
     if model is None:
-        model = SAC(
-            'MlpPolicy',
-            env,
+        model = SAC('MlpPolicy',env,
             batch_size=params['batch_size'],
-            gamma=params['gamma'],
-            learning_rate=params['lr'],
-            policy_kwargs=params['policy_kwargs'],
+            gamma = 1 - params['gamma_eps'],
+            learning_rate=params['lr'],            
             verbose=0,
-            ent_coef=params['ent_coef'],
+            ent_coef= f'auto_{params["ent_start"]}',
             tau=params['tau'],
-            buffer_size=params['buffer_size'],
-            learning_starts=params['learning_starts'],
-            train_freq=params['train_freq'],
-            gradient_steps=params['gradient_steps']
-        )
-        timesteps = 0
+            buffer_size=params['buffer_size']
+            )
+    timesteps = 0
     
     rewards_zero = [0]
     rewards = []
     total_time = time.time()
-    steps = 20000
+    steps = 25000
     
     while True:
 
@@ -98,7 +97,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             break
         
         eval_time_start = time.time()
-        reward, std_reward = evaluate_policy(model, env, n_eval_episodes=30, deterministic=True)
+        reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=True)
         eval_time_stop = time.time() - eval_time_start        
         rewards_zero.append(reward)
         rewards.append(reward)
@@ -115,13 +114,13 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             raise optuna.exceptions.TrialPruned()
         
-        if learn_time_stop > 180:
+        if learn_time_stop > 120:
             print(f'Trial {trial.number} exceeded limit. Pruning.')
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             raise optuna.exceptions.TrialPruned()
     
     eval_time_start = time.time()
-    reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100, deterministic=True)
+    reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=True)
     eval_time_stop = time.time() - eval_time_start        
 
     rewards_zero.append(reward)
@@ -153,29 +152,18 @@ def train_and_evaluate(params, total_timesteps, trial=None):
 def objective(trial):
     
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  
-    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-
+    
     total_timesteps = int(1e5)
 
     params = {
-        'batch_size': trial.suggest_int('batch_size', 256, 2000, log=True),
-        'gamma': trial.suggest_float('gamma', 0.95, 0.999999),
-        'lr': trial.suggest_float('lr', 1e-6, 1e-3, log=True),        
-        'tau': trial.suggest_float('tau', 1e-3, 1.0, log=True),
-        'ent_coef': trial.suggest_float('ent_coef', 0.1, 0.7),
+        'batch_size': trial.suggest_int('batch_size', 64, 3000, log=True),
+        'gamma_eps' : trial.suggest_float('gamma_eps', 1e-5, 1e-2, log=True),
+        'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),        
+        'tau': trial.suggest_float('tau', 1e-6, 0.1, log=True),
+        'ent_start' : trial.suggest_float('ent_start', 0.1, 0.9),
         'buffer_size': trial.suggest_int('buffer_size', int(1e4), int(1e6), log=True),
-        'learning_starts': trial.suggest_int('learning_starts', 100, 10000, log=True),
-        'train_freq': trial.suggest_int('train_freq', 10, 60),
-        'gradient_steps': trial.suggest_int('gradient_steps', 70, 150),
-        'actor_network_depth': trial.suggest_int('actor_network_depth', 1, 3),
-        'critic_network_depth': trial.suggest_int('critic_network_depth', 1, 3)        
-    }
+        }
 
-    for i in range(params['actor_network_depth']):
-        params[f'actor_layer_{i+1}_neurons'] = trial.suggest_int(f'actor_layer_{i+1}_neurons', 32, 1024, log=True)
-
-    for i in range(params['critic_network_depth']):
-        params[f'critic_layer_{i+1}_neurons'] = trial.suggest_int(f'critic_layer_{i+1}_neurons', 32, 1024, log=True)
     
     reward = train_and_evaluate(params, total_timesteps=total_timesteps, trial=trial)
 
@@ -183,14 +171,15 @@ def objective(trial):
 
 if __name__ == '__main__':
         
-    storage = optuna.storages.RDBStorage('sqlite:///gymnasium_pusher.db')
+    storage = optuna.storages.RDBStorage('sqlite:///gymnasium_standup.db')
     study = optuna.create_study(
-        study_name='7_04_sac_slope_testi1',
+        study_name='7_14_sac_slope',
         direction='maximize',
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_min_trials=10),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=20, n_min_trials=20),
         storage=storage,
         load_if_exists=True,
         sampler=optuna.samplers.CmaEsSampler(warn_independent_sampling = False)
     )
 
-    study.optimize(objective, n_trials=14200)
+    signal.signal(signal.SIGINT, signal_handler)
+    study.optimize(objective, n_trials=142000)
