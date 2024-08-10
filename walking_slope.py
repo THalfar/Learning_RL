@@ -130,8 +130,8 @@ def save_video_of_trial(trial):
 
     env.close()
 
-    for key, value in max_obs_values.items():
-        print(f'Maximum observation values for {key}: {value}')
+    # for key, value in max_obs_values.items():
+    #     print(f'Maximum observation values for {key}: {value}')
 
     clip_name = f'/workspace/videos/{env_name}_{total_reward:.5f}_{trial.study.study_name}_{trial.number}.mp4'
     clip = mpy.ImageSequenceClip(frames, fps=30)
@@ -184,7 +184,6 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             )
     timesteps = 0
     
-    rewards_zero = []
     rewards = []
     total_time = time.time()
     steps = 1e5
@@ -197,21 +196,18 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             timesteps += steps
             learn_time_stop = time.time() - learn_time_start
 
-            # Breaks if total timesteps reached so that last evaluation is done
-            if timesteps >= total_timesteps:
-                break
-        
+           
             eval_time_start = time.time()
             reward, std_reward = evaluate_policy(model, test_env, n_eval_episodes=200, deterministic=True)
-            eval_time_stop = time.time() - eval_time_start        
-            rewards_zero.append(reward)
+            eval_time_stop = time.time() - eval_time_start                    
             rewards.append(reward)
             running_mean = np.mean(rewards[-3:])
             total_mean = np.mean(rewards)
-            if len(rewards_zero) < 2:
+
+            if len(rewards) < 2:
                 slope = reward
             else:
-                slope, _ = np.polyfit(range(len(rewards_zero)), rewards_zero, 1)
+                slope, _ = np.polyfit(range(len(rewards)), rewards, 1)
 
             if reward > reward_max:
                 reward_max = reward
@@ -220,11 +216,14 @@ def train_and_evaluate(params, total_timesteps, trial=None):
 
             trial.report(slope, timesteps)
 
+           
+        
+
         except Exception as e:
             print(f'Error in trial {trial.number}: {e}')
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             trial.set_user_attr('error', str(e))
-            # trial.report(-1e3, timesteps) 
+            trial.report(float('nan'), timesteps) 
             env.close()
             del model
             del env
@@ -264,24 +263,14 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             print(f'Trial {trial.number} exceeded limit. Pruning.')
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             raise optuna.exceptions.TrialPruned()
+        
+        if timesteps >= total_timesteps:
+            break
     
     eval_time_start = time.time()
     reward, std_reward = evaluate_policy(model, test_env, n_eval_episodes=200, deterministic=True)
     eval_time_stop = time.time() - eval_time_start
 
-    if reward > max_reward:
-        print(f'--------   New max reward: {reward:.2f} > {max_reward:.2f}. Saving model. --------')
-        max_reward = reward
-        save_model(model, trial, timesteps, best = True)            
-        save_video_of_trial(trial)        
-
-    rewards_zero.append(reward)
-    rewards.append(reward)
-    running_mean = np.mean(rewards[-3:])
-    total_mean = np.mean(rewards)
-    slope, _ = np.polyfit(range(len(rewards_zero)), rewards_zero, 1)
-    print(f'Last eval. Slope: {slope:.2f} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {running_mean:.1f} mean: {total_mean:.2f}. Train time: {learn_time_stop} sec. Eval time: {int(eval_time_stop)} sec.') 
-        
     trial.set_user_attr('mean3', running_mean) 
     trial.set_user_attr('reward', reward)
     trial.set_user_attr('std', std_reward)
@@ -311,7 +300,7 @@ def objective(trial):
     total_timesteps = int(3e5)
 
     params = {
-        'batch_size': trial.suggest_int('batch_size', 8, 2048, log=True),
+        'batch_size': trial.suggest_int('batch_size', 32, 4200, log=True),
         'gamma_eps' : trial.suggest_float('gamma_eps', 1e-8, 1e-1, log=True),
         'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),        
         'tau': trial.suggest_float('tau', 1e-6, 0.1, log=True),
@@ -358,6 +347,6 @@ if __name__ == '__main__':
         sampler = qmc
     )
 
-    study.optimize(objective, n_trials=10)
-    study.sampler = es_sampler
+    # study.optimize(objective, n_trials=10)
+    # study.sampler = es_sampler
     study.optimize(objective, n_trials=10000000, timeout= 24 * 3600)
