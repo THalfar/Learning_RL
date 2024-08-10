@@ -1,6 +1,6 @@
 import gymnasium as gym
 import numpy as np
-from stable_baselines3 import SAC
+from stable_baselines3 import SAC, HerReplayBuffer
 import optuna
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -16,6 +16,10 @@ def signal_handler(signal, frame):
     print('You pressed Ctrl+C! Stopping the study...')
     study.stop()
     exit(0)
+
+# env_name = 'FetchReachDense-v2'
+env_name = 'HandManipulateBlockRotateXYZDense-v1'
+max_reward = -float('inf')
 
 
 
@@ -43,77 +47,99 @@ def build_policy_kwargs(params):
     policy_kwargs = dict(net_arch=dict(pi=actor_arch, qf=critic_arch))
     return policy_kwargs
 
-
-def save_model(model, trial, timesteps):
+def save_model(model, trial, timesteps, best = False):
     
-    model_path = f"./models/{trial.study.study_name}_{trial.number}.zip"
-    print(f"Saving model to {model_path}")
-    trial.set_user_attr('model_path', model_path)
-    trial.set_user_attr('timesteps', timesteps)
-    model.save(model_path)
-    
-
-def load_model(trial, env):
-
-    model_path = None
-    
-    # FIX for the key=value bug 
-    if 'model_path' not in trial.user_attrs:
-        for key, value in trial.user_attrs.items():
-            if key == value and key.startswith('./models/'):
-                model_path = trial.user_attrs.get('model_path', value)
-                break         
-
-    if model_path is None:
-        model_path = trial.user_attrs.get('model_path', None)
+    if not best:
+        model_path = f"./models/{trial.study.study_name}_{trial.number}.zip"
+    else:
+        model_path = f"./models/{trial.study.study_name}_best.zip"
         
-    if  model_path is not None:
-        if os.path.exists(model_path):
-            print(f"Loading existing model for trial {trial.number} from {model_path}")
-            model = SAC.load(model_path, env)
-            timesteps = trial.user_attrs.get('timesteps', 0)
-            return model, timesteps
-        else:
-            print(f'Model path {model_path} does not exist. Creating new model for trial {trial.number}.')
+    print(f"Saving model for trial to {model_path}")
+
+    if not best:
+        trial.set_user_attr('model_path', model_path)
+        trial.set_user_attr('timesteps', timesteps)
+
+    model.save(model_path)
+
+ 
+
+def load_model(trial, env, best = False):
     
+    if not best:
+        model_path = trial.user_attrs.get('model_path', f"./models/{trial.study.study_name}_{trial.number}.zip")
+    else:
+        model_path = f"./models/{trial.study.study_name}_best.zip"
+
+    if os.path.exists(model_path):
+        print(f"Loading existing model for trial {trial.number} from {model_path}")
+        model = SAC.load(model_path, env)
+        timesteps = trial.user_attrs.get('timesteps', 0)
+        return model, timesteps
     return None, 0
 
 
-best_reward_all = -float('inf')
+def save_video_of_trial(trial):
 
-def train_and_evaluate(params, total_timesteps, trial=None):
+    global env_name
+    eval_env = gym.make(env_name, render_mode='rgb_array')  
+    obs, info = eval_env.reset()
+    frames = []    
+    total_reward = 0.0    
+    model, _ = load_model(trial, eval_env, best = True)
+    
+    for _ in range(1000):
+        frame = eval_env.render()
+        if frame is not None:
+            frames.append(frame)
+        action, _states = model.predict(obs, deterministic=True)
+        obs, reward, done, trunc, info = eval_env.step(action)
+        total_reward += reward
+        if done or trunc:
+            break
 
-    global best_reward_all
+    eval_env.close()
 
+    clip_name = f'/workspace/videos/{env_name}_{total_reward:.5f}_{trial.study.study_name}_{trial.number}.mp4'
+    clip = mpy.ImageSequenceClip(frames, fps=30)
+    clip.write_videofile(clip_name, codec='libx264')
+    print(f'Video saved to {clip_name}')
+    
+    del model    
+    del eval_env
     gc.collect()
     torch.cuda.empty_cache()
     
+    return total_reward
 
-    env = create_env("HumanoidStandup-v4", n_envs=22)
-    # params['policy_kwargs'] = build_policy_kwargs(params)
 
-    gamma = 1 - params['gamma_eps']
-    
+def train_and_evaluate(params, total_timesteps, trial=None):
+
+    global max_reward, env_name
+
+    env = create_env(env_name, n_envs=23)
+    test_env = create_env(env_name, n_envs=23)
+
     model, timesteps = load_model(trial, env)
     if model is None:
-        model = SAC(
-            'MlpPolicy',
-            env,
+        model = SAC('MultiInputPolicy',env,
+                    replay_buffer_class=HerReplayBuffer,    
+                    replay_buffer_kwargs = {
+                    'n_sampled_goal' : params['n_sampled_goal'],
+                    'goal_selection_strategy': params['goal_selection_strategy']
+                    },
             batch_size=params['batch_size'],
-            gamma=gamma,
-            learning_rate=params['lr'],
-            # policy_kwargs=params['policy_kwargs'],
+            gamma = 1 - params['gamma_eps'],
+            learning_rate=params['lr'],            
             verbose=0,
-            ent_coef=params['ent_coef'],
-            tau=params['tau']
-            # buffer_size=params['buffer_size'],
-            # learning_starts=params['learning_starts'],
-            # train_freq=params['train_freq'],
-            # gradient_steps=params['gradient_steps']
-        )
-        timesteps = 0
+            ent_coef= f'auto_{params["ent_start"]}',
+            tau=params['tau'],
+            buffer_size=params['buffer_size'],
+            learning_starts=3e4
+            )
+    timesteps = 0
     
-    step = 1e5
+    step = 3e5
     
     rewards = []
     current_lr = params['lr']
@@ -123,16 +149,29 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     
     while timesteps < total_timesteps:
 
-        learn_time_start = time.time()        
-        model.learn(total_timesteps=step, reset_num_timesteps=False)
-        timesteps += step
-        learn_time_stop = time.time() - learn_time_start
-        
-        eval_time_start = time.time()
-        reward, std_reward = evaluate_policy(model, env, n_eval_episodes=40, deterministic=True)
-        eval_time_stop = time.time() - eval_time_start        
-        rewards.append(reward)
-        mean_reward = np.mean(rewards[-3:])
+        try: 
+            learn_time_start = time.time()        
+            model.learn(total_timesteps=step, reset_num_timesteps=False)
+            timesteps += step
+            learn_time_stop = time.time() - learn_time_start
+            
+            eval_time_start = time.time()
+            reward, std_reward = evaluate_policy(model, test_env, n_eval_episodes=200, deterministic=True)
+            eval_time_stop = time.time() - eval_time_start        
+            rewards.append(reward)
+            mean_reward = np.mean(rewards[-3:])
+
+        except Exception as e:
+            print(f'Error in trial {trial.number}: {e}')
+            print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
+            env.close()
+            test_env.close()
+            del model
+            del env
+            del test_env
+            gc.collect()
+            torch.cuda.empty_cache()
+            raise optuna.exceptions.TrialPruned()
 
         print(f'Trial {trial.number} timestep {timesteps} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {mean_reward:.1f} training time: {learn_time_stop:.1f} sec with {step/learn_time_stop:.1f} fps. Eval time: {eval_time_stop:.1f} sec.')        
 
@@ -143,175 +182,66 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             best_reward = reward
             trial.user_attrs['best_reward'] = best_reward
             save_model(model, trial, timesteps)
-        
+                    
         if trial.should_prune():
             print(f'Trial {trial.number} pruned at timestep {timesteps}.')                
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
+            env.close()
+            test_env.close()
+            del model
+            del env
+            del test_env
+            gc.collect()
+            torch.cuda.empty_cache()
             raise optuna.exceptions.TrialPruned()
         
-        if learn_time_stop > 180:
+        if learn_time_stop > 600:
             print(f'Trial {trial.number} exceeded limit. Pruning.')
-            print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
+            print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')     
+            env.close()
+            test_env.close()
+            del model
+            del env
+            del test_env
+            gc.collect()
+            torch.cuda.empty_cache()   
             raise optuna.exceptions.TrialPruned()
         
         current_lr *= params['lr_reduction']
         model.lr_schedule = lambda _: current_lr
         print(f'New learning rate: {current_lr:.8f}')
     
-    if best_reward > best_reward_all:
-        print(f'New best reward for all trials: {best_reward:.2f} > {best_reward_all:.2f}')
-        best_reward_all = best_reward
-        save_video_of_trial(trial, name = 'HumanoidStandup-v4')
+        if best_reward > max_reward:
+            
+            print(f'\n----------------- New best reward for all trials: {best_reward:.2f} > {max_reward:.2f} ----------------- \n')
+            max_reward = best_reward
+            save_model(model, trial, timesteps, best = True)
+            save_video_of_trial(trial)
     
     print(f'Total time taken for trial {trial.number}: {int(time.time() - total_time)/ 60:.1f} min.')    
     print(f'Last mean reward: {mean_reward:.1f}')
     print(f'Total timesteps: {timesteps}')
     
     env.close()
+    test_env.close()
     del model
     del env
+    del test_env
     gc.collect()
     torch.cuda.empty_cache()
     
     return best_reward
 
-def save_video_of_trial(trial, name = 'HumanoidStandup-v4'):
 
-    
-    eval_env = gym.make("HumanoidStandup-v4", render_mode='rgb_array')  
-    obs, info = eval_env.reset()
-    frames = []    
-    total_reward = 0.0    
-    model, _ = load_model(trial, eval_env)
-    
-    for _ in range(1000):
-        frame = eval_env.render()
-        if frame is not None:
-            frames.append(frame)
-        action, _states = model.predict(obs, deterministic=True)
-        obs, reward, done, trunc, info = eval_env.step(action)
-        total_reward += reward
-        if done or trunc:
-            break
-
-    eval_env.close()
-
-    clip = mpy.ImageSequenceClip(frames, fps=30)
-    clip.write_videofile(f'/workspace/videos/{name}_{total_reward:.0f}_{trial.number}.mp4', codec='libx264')
-    
-    del model    
-    del eval_env
-    gc.collect()
-    torch.cuda.empty_cache()
-    
-    return total_reward
-
-
-def save_video_of_model(params, trial, total_timesteps,  steps = 40000, name='humanoid'):
-
-    gc.collect()
-    torch.cuda.empty_cache()
-    
-    env = create_env("HumanoidStandup-v4", n_envs=20)
-    # params['policy_kwargs'] = build_policy_kwargs(params)
-
-    best_model_path = f"./models/{name}_trial_{trial.number}_long.zip"
-    best_reward = -float('inf')
-    
-    model, timesteps = load_model(trial, env)
-    
-    if model is None:
-        print(f'Model is None, creating new model for trial {trial.number}.')
-        model = SAC(
-            'MlpPolicy',
-            env,
-            batch_size=params['batch_size'],
-            gamma= 1 - params['gamma_eps'],
-            learning_rate=params['lr'],
-            policy_kwargs=params['policy_kwargs'],
-            verbose=1,
-            ent_coef= f'auto_{params["ent_start"]}',
-            tau=params['tau'],
-            buffer_size=params['buffer_size']
-            # buffer_size=params['buffer_size'],
-            # learning_starts=params['learning_starts'],
-            # train_freq=params['train_freq']
-            # gradient_steps=params['gradient_steps']
-        )
-        timesteps = 0
-
-    lr_decay = trial.params['lr_reduction']
-    current_lr = params['lr']
-
-    total_time = time.time()
-    
-    while timesteps < total_timesteps:
-
-        train_time = time.time()
-        model.learn(total_timesteps=steps, reset_num_timesteps=False)
-        train_time_stop = time.time() - train_time
-
-        eval_time = time.time()
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=200, deterministic=True)
-        eval_time_stop = time.time() - eval_time
-        
-        timesteps += steps
-        print(f'Timestep {int(timesteps)} Mean reward: {mean_reward:.2f} +/- {std_reward:.2f} in {train_time_stop:.1f} sec with {steps/train_time_stop:.1f} fps. Eval time: {eval_time_stop:.1f} sec.')   
-        
-        if mean_reward > best_reward:
-            print(f'New best reward: {mean_reward:.2f} > {best_reward:.2f} saving model to {best_model_path}')
-            best_reward = mean_reward
-            model.save(best_model_path)
-        
-        current_lr *= lr_decay
-        model.lr_schedule = lambda _: current_lr
-        print(f'New learning rate: {current_lr:.8f}')
-
-
-    print(f'Total time taken for trial {trial.number}: {int(time.time() - total_time)/ 60:.1f} min.')
-    print(f'Total mean reward this training: {best_reward:.1f}')
-
-    env.close()
-    
-    eval_env = gym.make("Hopper-v4", render_mode='rgb_array')  
-    obs, info = eval_env.reset()
-    frames = []    
-    total_reward = 0.0
-    model.load(best_model_path)
-
-    for _ in range(1000):
-        frame = eval_env.render()
-        if frame is not None:
-            frames.append(frame)
-        action, _states = model.predict(obs, deterministic=True)
-        obs, reward, done, trunc, info = eval_env.step(action)
-        total_reward += reward
-        if done or trunc:
-            break
-
-    eval_env.close()
-
-    clip = mpy.ImageSequenceClip(frames, fps=30)
-    clip.write_videofile(f'/workspace/videos/humanoid_walking_{name}_trial_{trial.number}_{total_reward:.0f}.mp4', codec='libx264')
-    
-    del model
-    del env
-    del eval_env
-    gc.collect()
-    torch.cuda.empty_cache()
-    
-    return total_reward
-
-
-
-def train_sac_baseline(env_id="HumanoidStandup-v4", total_timesteps=1e6):
+def train_sac_baseline(env_id="FetchPushDense-v2", total_timesteps=1e6):
     # Create environment
     env = create_env(env_id, n_envs=22)
     
     # Initialize the SAC model with default hyperparameters
-    model = SAC('MlpPolicy',env)
+    # model = SAC('MlpPolicy',env)
+    model = SAC('MultiInputPolicy',env)
 
-    step = 1e5
+    step = 2e5
     timesteps = 0
     rewards = []
     best_reward = -float('inf')
@@ -342,7 +272,7 @@ def train_sac_baseline(env_id="HumanoidStandup-v4", total_timesteps=1e6):
 
     env.close()
 
-    eval_env = gym.make("HumanoidStandup-v4", render_mode='rgb_array')  
+    eval_env = gym.make("FetchPushDense-v2", render_mode='rgb_array')  
     obs, info = eval_env.reset()
     frames = []    
     total_reward = 0.0    
@@ -361,8 +291,8 @@ def train_sac_baseline(env_id="HumanoidStandup-v4", total_timesteps=1e6):
     eval_env.close()
 
     clip = mpy.ImageSequenceClip(frames, fps=30)
-    clip.write_videofile(f'/workspace/videos/hopper_sac_baseline_{total_reward:.0f}.mp4', codec='libx264')
-    print(f'Saved video with total reward: {total_reward:.2f} to /workspace/videos/hopper_sac_baseline_{total_reward:.0f}.mp4')
+    clip.write_videofile(f'/workspace/videos/sac_baseline_{total_reward:.0f}.mp4', codec='libx264')
+    print(f'Saved video with total reward: {total_reward:.2f} to /workspace/videos/sac_baseline_{total_reward:.0f}.mp4')
 
     del model
     del env
@@ -376,7 +306,7 @@ def train_sac_baseline(env_id="HumanoidStandup-v4", total_timesteps=1e6):
 
 def objective(trial):
 
-    total_timesteps = int(1e6)
+    total_timesteps = int(5e6)
 
     params = {
         'batch_size': trial.suggest_int('batch_size', 128, 3000, log=True),
@@ -384,13 +314,10 @@ def objective(trial):
         'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),        
         'tau': trial.suggest_float('tau', 1e-6, 0.1, log=True),
         'ent_start' : trial.suggest_float('ent_start', 0.1, 0.9),
-        'buffer_size': trial.suggest_int('buffer_size', int(1e4), int(1e6), log=True),
-        # 'learning_starts': trial.suggest_int('learning_starts', 100, 10000, log=True),
-        # 'train_freq': trial.suggest_int('train_freq', 1, 50),
-        # 'gradient_steps': trial.suggest_int('gradient_steps', 10, 200),
-        # 'actor_network_depth': trial.suggest_int('actor_network_depth', 1, 2),
-        # 'critic_network_depth': trial.suggest_int('critic_network_depth', 1, 2),
-        'lr_reduction': trial.suggest_float('lr_reduction', 0.8, 1.0)       
+        'buffer_size': trial.suggest_int('buffer_size', int(1e4), int(2e6), log=True),
+        'lr_reduction': trial.suggest_float('lr_reduction', 0.7, 1.0),
+        'n_sampled_goal': trial.suggest_float('n_sampled_goal', 0.1, 2, log = True),
+        "goal_selection_strategy": trial.suggest_categorical("goal_selection_strategy", ['future', 'final', 'episode'])
     }
 
     # for i in range(params['actor_network_depth']):
@@ -410,15 +337,17 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
 
             
-    previous_study = optuna.load_study(study_name='7_14_sac_slope', storage='sqlite:///gymnasium_standup.db')
+    # previous_study = optuna.load_study(study_name='7_17_push_testi2', storage='sqlite:///gymnasium_reach.db')
 
-    last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
-                        key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:20]
+    # last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
+    #                     key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:10]
+
+    # last_trials.reverse()
 
     # best_reward = train_sac_baseline()
     # print(f'Baseline reward: {best_reward:.1f}')
 
-    study_name='7_15_sac_testi6'
+    study_name='7_18_hands_of_kosmos'
     
     sampler = optuna.samplers.TPESampler(
     consider_prior=True,
@@ -432,7 +361,7 @@ if __name__ == '__main__':
     warn_independent_sampling=False    
     )
 
-    storage = optuna.storages.RDBStorage('sqlite:///gymnasium_standup.db')
+    storage = optuna.storages.RDBStorage('sqlite:///gymnasium_hands.db')
     study = optuna.create_study(
         study_name=study_name,
         direction='maximize',
@@ -444,21 +373,10 @@ if __name__ == '__main__':
 
     # timesteps are not the same in the previous trials so that new trials won't be pruned with these timesteps
     # for idx, trial in enumerate(last_trials):
-    #     trial.params['lr_reduction'] = np.random.uniform(0.8, 1.0)
+    #     trial.params['lr_reduction'] = np.random.uniform(0.7, 1.0)
     #     print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
     #     print(f'Params: {trial.params}')
     #     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
     
-    study.optimize(objective, n_trials=10000, timeout= 4 * 3600)
-
-    # top_trials = sorted([t for t in study.trials if t.state != optuna.trial.TrialState.PRUNED], key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:5]
-
-    # for trial in top_trials:
-    #     print(f"Training top trial {trial.number} with long training duration...")
-    #     print(f'Value: {trial.value:.5f}')
-    #     print(f'Params: {trial.params}')
-    
-    
-    #     total_reward = sava_video_of_trial(trial, name = study_name)
-    #     print(f"Video saved for trial {trial.number} with total reward: {total_reward:.2f}")
+    study.optimize(objective, n_trials=1000000, timeout= 400 * 3600)
