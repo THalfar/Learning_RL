@@ -12,13 +12,13 @@ import torch
 import os
 
 class OptunaSAC:
-    def __init__(self, env_id="Hopper-v4", total_timesteps=300000, optimization_time= 3600 * 2, verbose = 1, study_name="sac_study", step = 20000):
+    def __init__(self, env_id="Hopper-v4", total_timesteps=300000, optimization_time= 3600 * 2, verbose = 1, study_name="sac_study", step = 20000, param_space=None):
          
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
         self.env_id = env_id
         self.total_timesteps = total_timesteps
-        self.n_envs = 22
+        self.n_envs = 23
         self.n_eval_episodes = 50
         self.total_timesteps = total_timesteps
         self.step = step
@@ -28,37 +28,51 @@ class OptunaSAC:
         self.max_step_time = 360
         self.sql_name = 'sqlite:///class_test.db'
         
-        self.param_choose = {
-            'batch_size': True,
-            'gamma_eps': True,
-            'lr': True,
-            'tau': True,
-            'ent_start': True,
-            'lr_reduction': True,            
-             }
+        self.param_space = param_space or {
+            'batch_size': (64, 3000),
+            'gamma_eps': (1e-5, 1e-2),
+            'lr': (1e-5, 1e-2),
+            'tau': (1e-5, 0.1),
+            'neurons': (64, 1024),
+            'gradient_steps': (1, 8),
+            'train_freq': (1, 8),
+            'layer': (1, 3)
+        }
 
         self.best_reward_all = -np.inf
 
 
     def suggest_params(self, trial):
-
-        assert any(self.param_choose.values()), "At least one parameter must be chosen."
         params = {}
 
-        if self.param_choose.get('batch_size', False):
-            params['batch_size'] = trial.suggest_int('batch_size', 64, 3000, log=True)
-        if self.param_choose.get('gamma_eps', False):
-            params['gamma_eps'] = trial.suggest_float('gamma_eps', 1e-5, 1e-2, log=True)
-        if self.param_choose.get('lr', False):
-            params['lr'] = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
-        if self.param_choose.get('tau', False):
-            params['tau'] = trial.suggest_float('tau', 1e-5, 0.1, log=True)
-        if self.param_choose.get('ent_start', False):
-            params['ent_start'] = trial.suggest_float('ent_start', 0.1, 0.9)
-        if self.param_choose.get('lr_reduction', False):
-            params['lr_reduction'] = trial.suggest_float('lr_reduction', 0.5, 1.0)   
+        if 'batch_size' in self.param_space:
+            params['batch_size'] = trial.suggest_int('batch_size', *self.param_space['batch_size'], log=True)
+        if 'gamma_eps' in self.param_space:
+            params['gamma_eps'] = trial.suggest_float('gamma_eps', *self.param_space['gamma_eps'], log=True)
+        if 'lr' in self.param_space:
+            params['lr'] = trial.suggest_float('lr', *self.param_space['lr'], log=True)
+        if 'tau' in self.param_space:
+            params['tau'] = trial.suggest_float('tau', *self.param_space['tau'], log=True)
+        if 'neurons' in self.param_space:
+            params['neurons'] = trial.suggest_int('neurons', *self.param_space['neurons'], log=True)
+        if 'layer' in self.param_space:
+            params['layer'] = trial.suggest_int('layer', *self.param_space['layer'])
+        if 'gradient_steps' in self.param_space:
+            params['gradient_steps'] = trial.suggest_int('gradient_steps', *self.param_space['gradient_steps'])
+        if 'train_freq' in self.param_space:
+            params['train_freq'] = trial.suggest_int('train_freq', *self.param_space['train_freq'])
 
-        return params 
+        return params
+    
+
+    def build_policy_kwargs(self, params):    
+
+        policy_kwargs = dict(
+            net_arch=[params['neurons'] for _ in range(params['layer'])]
+        )
+        return policy_kwargs
+        
+
 
 
     def create_env(self):
@@ -72,8 +86,7 @@ class OptunaSAC:
         sac_kwargs = {}
         
         env = self.create_env()
-        # print(f'Trial {trial.number} started with params: {params}.')
-
+        
         if params.get('batch_size', False):
             sac_kwargs['batch_size'] = params['batch_size']
         if params.get('gamma_eps', False):
@@ -82,8 +95,9 @@ class OptunaSAC:
             sac_kwargs['learning_rate'] = params['lr']
         if params.get('tau', False):
             sac_kwargs['tau'] = params['tau']
-        if params.get('ent_start', False):
-            sac_kwargs['ent_coef'] = f'auto_{params["ent_start"]}'
+        
+        sac_kwargs['policy_kwargs'] = self.build_policy_kwargs(params)
+            
 
         rewards = []
         best_reward = -float('inf')
@@ -93,8 +107,6 @@ class OptunaSAC:
         model = SAC('MlpPolicy', env, verbose=0, **sac_kwargs)
         model_path = f'models/{self.study_name}_{self.env_id}_{trial.number}.zip'
 
-        if params.get('lr_reduction', False):
-            current_lr = params['lr']
         
         while timestep < self.total_timesteps:
             
@@ -108,6 +120,7 @@ class OptunaSAC:
                 eval_time_stop = time.time() - eval_time_start        
                 rewards.append(reward)
                 mean_reward = np.mean(rewards[-3:])
+                
             except Exception as e:
                 print(f'Error in trial {trial.number} timestep {timestep}.')
                 print(e)

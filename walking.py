@@ -11,6 +11,9 @@ import gc
 import torch
 import os
 import signal
+import torch
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim import Adam
 
 def signal_handler(signal, frame):
     print('You pressed Ctrl+C! Stopping the study...')
@@ -18,7 +21,8 @@ def signal_handler(signal, frame):
     exit(0)
 
 # env_name = 'FetchReachDense-v2'
-env_name = 'HandManipulateBlockRotateXYZDense-v1'
+# env_name = 'HandManipulateBlockRotateXYZDense-v1'
+env_name = 'HandManipulateBlockRotateParallelDense-v1'
 max_reward = -float('inf')
 
 
@@ -88,7 +92,7 @@ def save_video_of_trial(trial):
     total_reward = 0.0    
     model, _ = load_model(trial, eval_env, best = True)
     
-    for _ in range(1000):
+    for _ in range(50):
         frame = eval_env.render()
         if frame is not None:
             frames.append(frame)
@@ -118,34 +122,49 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     global max_reward, env_name
 
     env = create_env(env_name, n_envs=23)
-    test_env = create_env(env_name, n_envs=23)
+    # test_env = create_env(env_name, n_envs=18)
+
+    if params['network_size'] == 'tiny':
+        policy_kwargs = {'net_arch' : [64, 64, 64]}
+    elif params['network_size'] == 'small':
+        policy_kwargs = {'net_arch' : [128, 128, 128]}
+    elif params['network_size'] == 'medium':
+        policy_kwargs = {'net_arch' : [256, 256, 256]}
+    elif params['network_size'] == 'large':
+        policy_kwargs = {'net_arch' : [512, 512, 512]}
+    elif params['network_size'] == 'huge':
+        policy_kwargs = {'net_arch' : [1024, 1024, 1024]}
 
     model, timesteps = load_model(trial, env)
     if model is None:
         model = SAC('MultiInputPolicy',env,
-                    replay_buffer_class=HerReplayBuffer,    
-                    replay_buffer_kwargs = {
-                    'n_sampled_goal' : params['n_sampled_goal'],
-                    'goal_selection_strategy': params['goal_selection_strategy']
-                    },
+                    # replay_buffer_class=HerReplayBuffer,    
+                    # replay_buffer_kwargs = {
+                    # 'n_sampled_goal' : params['n_sampled_goal'],
+                    # 'goal_selection_strategy': params['goal_selection_strategy']
+                    # },
+            policy_kwargs = policy_kwargs,
             batch_size=params['batch_size'],
             gamma = 1 - params['gamma_eps'],
             learning_rate=params['lr'],            
-            verbose=0,
-            ent_coef= f'auto_{params["ent_start"]}',
+            verbose=0,            
             tau=params['tau'],
-            buffer_size=params['buffer_size'],
-            learning_starts=3e4
+            gradient_steps=params['gradient_steps'],
+            train_freq=params['train_freq'],
+            ent_coef=params['ent_coef']     
             )
-    timesteps = 0
+        timesteps = 0
     
     step = 3e5
     
     rewards = []
-    current_lr = params['lr']
+    # current_lr = params['lr']
     best_reward = -float('inf')
 
     total_time = time.time()
+
+    optimizer = Adam(model.policy.parameters(), lr=params['lr'])
+    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, threshold=0.01, verbose=True)
     
     while timesteps < total_timesteps:
 
@@ -156,7 +175,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             learn_time_stop = time.time() - learn_time_start
             
             eval_time_start = time.time()
-            reward, std_reward = evaluate_policy(model, test_env, n_eval_episodes=200, deterministic=True)
+            reward, std_reward = evaluate_policy(model, env, n_eval_episodes=500, deterministic=True)
             eval_time_stop = time.time() - eval_time_start        
             rewards.append(reward)
             mean_reward = np.mean(rewards[-3:])
@@ -165,17 +184,17 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             print(f'Error in trial {trial.number}: {e}')
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             env.close()
-            test_env.close()
+            # test_env.close()
             del model
             del env
-            del test_env
+            # del test_env
             gc.collect()
             torch.cuda.empty_cache()
             raise optuna.exceptions.TrialPruned()
 
         print(f'Trial {trial.number} timestep {timesteps} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {mean_reward:.1f} training time: {learn_time_stop:.1f} sec with {step/learn_time_stop:.1f} fps. Eval time: {eval_time_stop:.1f} sec.')        
 
-        trial.report(mean_reward, timesteps)
+        trial.report(reward, timesteps)
 
         if reward > best_reward:
             print(f'New best reward: {reward:.2f} > {best_reward:.2f}')
@@ -187,29 +206,29 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             print(f'Trial {trial.number} pruned at timestep {timesteps}.')                
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             env.close()
-            test_env.close()
+            # test_env.close()
             del model
             del env
-            del test_env
+            # del test_env
             gc.collect()
             torch.cuda.empty_cache()
             raise optuna.exceptions.TrialPruned()
         
-        if learn_time_stop > 600:
+        if learn_time_stop > 900:
             print(f'Trial {trial.number} exceeded limit. Pruning.')
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')     
             env.close()
-            test_env.close()
+            # test_env.close()
             del model
             del env
-            del test_env
+            # del test_env
             gc.collect()
             torch.cuda.empty_cache()   
             raise optuna.exceptions.TrialPruned()
         
-        current_lr *= params['lr_reduction']
-        model.lr_schedule = lambda _: current_lr
-        print(f'New learning rate: {current_lr:.8f}')
+        # current_lr *= params['lr_reduction']
+        # model.lr_schedule = lambda _: current_lr
+        # print(f'New learning rate: {current_lr:.8f}')
     
         if best_reward > max_reward:
             
@@ -223,10 +242,10 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     print(f'Total timesteps: {timesteps}')
     
     env.close()
-    test_env.close()
+    # test_env.close()
     del model
     del env
-    del test_env
+    # del test_env
     gc.collect()
     torch.cuda.empty_cache()
     
@@ -235,13 +254,13 @@ def train_and_evaluate(params, total_timesteps, trial=None):
 
 def train_sac_baseline(env_id="FetchPushDense-v2", total_timesteps=1e6):
     # Create environment
-    env = create_env(env_id, n_envs=22)
+    env = create_env(env_id, n_envs=19)
     
     # Initialize the SAC model with default hyperparameters
     # model = SAC('MlpPolicy',env)
     model = SAC('MultiInputPolicy',env)
 
-    step = 2e5
+    step = 6e5
     timesteps = 0
     rewards = []
     best_reward = -float('inf')
@@ -306,19 +325,20 @@ def train_sac_baseline(env_id="FetchPushDense-v2", total_timesteps=1e6):
 
 def objective(trial):
 
-    total_timesteps = int(5e6)
+    total_timesteps = int(10e6)
 
     params = {
-        'batch_size': trial.suggest_int('batch_size', 128, 3000, log=True),
-        'gamma_eps': trial.suggest_float('gamma_eps', 1e-5, 1e-1, log = True),
-        'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),        
-        'tau': trial.suggest_float('tau', 1e-6, 0.1, log=True),
-        'ent_start' : trial.suggest_float('ent_start', 0.1, 0.9),
-        'buffer_size': trial.suggest_int('buffer_size', int(1e4), int(2e6), log=True),
-        'lr_reduction': trial.suggest_float('lr_reduction', 0.7, 1.0),
-        'n_sampled_goal': trial.suggest_float('n_sampled_goal', 0.1, 2, log = True),
-        "goal_selection_strategy": trial.suggest_categorical("goal_selection_strategy", ['future', 'final', 'episode'])
-    }
+        'batch_size': trial.suggest_int('batch_size', 256, 1024, log=True),
+        'gamma_eps' : trial.suggest_float('gamma_eps', 1e-5, 1e-1, log=True),
+        'lr': trial.suggest_float('lr', 1e-4, 1e-3, log=True),        
+        'tau': trial.suggest_float('tau', 0.0001, 0.01),        
+        'buffer_size' : 4e6,        
+        'network_size': trial.suggest_categorical('network_size', ['tiny', 'small', 'medium', 'large', 'huge']),
+        'gradient_steps': trial.suggest_int('gradient_steps', 4, 8),
+        'train_freq': trial.suggest_int('train_freq', 4, 8),
+        'ent_coef': trial.suggest_categorical('ent_coef', ['auto', 0.1, 0.2, 0.5]),
+        }
+
 
     # for i in range(params['actor_network_depth']):
     #     params[f'actor_layer_{i+1}_neurons'] = trial.suggest_int(f'actor_layer_{i+1}_neurons', 32, 512, log=True)
@@ -335,48 +355,113 @@ if __name__ == '__main__':
 
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  
     signal.signal(signal.SIGINT, signal_handler)
+    storage = optuna.storages.RDBStorage('sqlite:///HandManipulateBlockRotateParallelDense.db')
 
             
-    # previous_study = optuna.load_study(study_name='7_17_push_testi2', storage='sqlite:///gymnasium_reach.db')
+    previous_study = optuna.load_study(study_name='8_13_phase2_test9', storage=storage)
 
-    # last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
-    #                     key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:10]
+    last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
+                        key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:5]
 
     # last_trials.reverse()
 
     # best_reward = train_sac_baseline()
     # print(f'Baseline reward: {best_reward:.1f}')
 
-    study_name='7_18_hands_of_kosmos'
+    study_name='8_15_phase2'
     
-    sampler = optuna.samplers.TPESampler(
-    consider_prior=True,
-    prior_weight=1.0,
+    tpe = optuna.samplers.TPESampler(
+    consider_prior=True,    
     consider_magic_clip=True,
-    consider_endpoints=False,
-    n_startup_trials=10,
-    n_ei_candidates=24,
+    consider_endpoints=True,
+    n_startup_trials=0,
     multivariate=True,
     group=True,
     warn_independent_sampling=False    
     )
 
-    storage = optuna.storages.RDBStorage('sqlite:///gymnasium_hands.db')
+    qmc = optuna.samplers.QMCSampler(warn_independent_sampling=False)
+
+
     study = optuna.create_study(
         study_name=study_name,
         direction='maximize',
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_min_trials = 10),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_min_trials = 5),
         storage=storage,
         load_if_exists=True,
-        sampler=sampler
+        sampler=tpe
     )
 
-    # timesteps are not the same in the previous trials so that new trials won't be pruned with these timesteps
-    # for idx, trial in enumerate(last_trials):
-    #     trial.params['lr_reduction'] = np.random.uniform(0.7, 1.0)
+    # sac_default_params = {
+    #     'batch_size': 256,
+    #     'gamma_eps': 0.01,
+    #     'lr': 0.0003,
+    #     'tau': 0.005,        
+    #     'buffer_size': 2.1e6,
+    #     'network_size': 'medium',
+    #     'train_freq' : 2,
+    #     'gradient_steps' : 2,
+    #     'ent_coef': 'auto'
+    # }
+
+    # study.enqueue_trial(sac_default_params)
+
+    # study.enqueue_trial({
+    # 'batch_size': 512,
+    # 'gamma_eps': 0.01,
+    # 'lr': 0.001,
+    # 'tau': 0.007,        
+    # 'buffer_size': 2.1e6,
+    # 'network_size': 'large',
+    # 'train_freq': 4,
+    # 'gradient_steps': 4,
+    # 'ent_coef': 0.2
+    # })
+
+    # study.enqueue_trial({
+    # 'batch_size': 128,
+    # 'gamma_eps': 0.05,
+    # 'lr': 0.0001,
+    # 'tau': 0.003,        
+    # 'buffer_size': 2.1e6,
+    # 'network_size': 'small',
+    # 'train_freq': 8,
+    # 'gradient_steps': 1,
+    # 'ent_coef': 0.1
+    # })
+
+    # study.enqueue_trial({
+    # 'batch_size': 256,
+    # 'gamma_eps': 0.02,
+    # 'lr': 0.0005,
+    # 'tau': 0.005,        
+    # 'buffer_size': 2.1e6,
+    # 'network_size': 'medium',
+    # 'train_freq': 2,
+    # 'gradient_steps': 4,
+    # 'ent_coef': 0.5
+    # })
+
+    # study.enqueue_trial({
+    # 'batch_size': 512,
+    # 'gamma_eps': 0.01,
+    # 'lr': 0.0003,
+    # 'tau': 0.005,        
+    # 'buffer_size': 2.1e6,
+    # 'network_size': 'large',
+    # 'train_freq': 4,
+    # 'gradient_steps': 2,
+    # 'ent_coef': 'auto'
+    # })
+
+
+    
+    # for idx, trial in enumerate(last_trials):        
     #     print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
     #     print(f'Params: {trial.params}')
     #     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
     
+    # study.optimize(objective, n_trials=10, timeout= 400 * 3600)
+    # study.sampler = tpe
     study.optimize(objective, n_trials=1000000, timeout= 400 * 3600)

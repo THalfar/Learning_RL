@@ -147,6 +147,8 @@ def save_video_of_trial(trial):
 
 def train_and_evaluate(params, total_timesteps, trial=None):
 
+    
+
     global env_name, max_reward
     
     env = create_env(env_name, n_envs=18)
@@ -166,37 +168,35 @@ def train_and_evaluate(params, total_timesteps, trial=None):
     
     model, timesteps = load_model(trial, env)
     if model is None:
-        model = SAC('MultiInputPolicy',env,
-                    replay_buffer_class=HerReplayBuffer,    
-                    replay_buffer_kwargs = {
-                    'n_sampled_goal' : params['n_sampled_goal'],
-                    'goal_selection_strategy': params['goal_selection_strategy']
-                    },
+        model = SAC('MultiInputPolicy',
+                    env,
+                    # replay_buffer_class=HerReplayBuffer,    
+                    # replay_buffer_kwargs = {
+                    # 'n_sampled_goal' : params['n_sampled_goal'],
+                    # 'goal_selection_strategy': params['goal_selection_strategy']
+                    # }
             policy_kwargs = policy_kwargs,
             batch_size=params['batch_size'],
             gamma = 1 - params['gamma_eps'],
             learning_rate=params['lr'],            
             verbose=0,
             ent_coef= f'auto_{params["ent_start"]}',
-            tau=params['tau'],
-            buffer_size=params['buffer_size'],
-            learning_starts=1e4
+            tau=params['tau']            
             )
-    timesteps = 0
+        timesteps = 0
     
     rewards = []
     total_time = time.time()
     steps = 1e5
     reward_max = -float('inf')
     
-    while True:
+    while timesteps < total_timesteps:
         try:
             learn_time_start = time.time()        
-            model.learn(total_timesteps=steps, reset_num_timesteps=False)
-            timesteps += steps
+            model.learn(total_timesteps=steps, reset_num_timesteps=False)     
+            timesteps += steps       
             learn_time_stop = time.time() - learn_time_start
 
-           
             eval_time_start = time.time()
             reward, std_reward = evaluate_policy(model, test_env, n_eval_episodes=200, deterministic=True)
             eval_time_stop = time.time() - eval_time_start                    
@@ -213,11 +213,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
                 reward_max = reward
                 
             print(f'Timestep {timesteps} slope: {slope:.2f} reward: {reward:.2f} +/- {std_reward:.2f} running mean: {running_mean:.1f} total mean: {total_mean:.1f} training time: {int(learn_time_stop)} sec with {steps/learn_time_stop:.1f} fps. . Eval time: {int(eval_time_stop)} sec.')        
-
             trial.report(slope, timesteps)
-
-           
-        
 
         except Exception as e:
             print(f'Error in trial {trial.number}: {e}')
@@ -242,7 +238,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             
             print(f'Pruner want to prune trial {trial.number} at timestep {timesteps} with value {slope}.')
 
-            if slope < 5:
+            if slope < 10:
                 env.close()
                 del model
                 del env
@@ -263,14 +259,7 @@ def train_and_evaluate(params, total_timesteps, trial=None):
             print(f'Trial {trial.number} exceeded limit. Pruning.')
             print(f'Total time taken: {int(time.time() - total_time)/ 60:.1f} min.')        
             raise optuna.exceptions.TrialPruned()
-        
-        if timesteps >= total_timesteps:
-            break
-    
-    eval_time_start = time.time()
-    reward, std_reward = evaluate_policy(model, test_env, n_eval_episodes=200, deterministic=True)
-    eval_time_stop = time.time() - eval_time_start
-
+                
     trial.set_user_attr('mean3', running_mean) 
     trial.set_user_attr('reward', reward)
     trial.set_user_attr('std', std_reward)
@@ -297,7 +286,7 @@ def objective(trial):
     
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  
     
-    total_timesteps = int(3e5)
+    total_timesteps = int(2e5)
 
     params = {
         'batch_size': trial.suggest_int('batch_size', 32, 4200, log=True),
@@ -305,9 +294,7 @@ def objective(trial):
         'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),        
         'tau': trial.suggest_float('tau', 1e-6, 0.1, log=True),
         'ent_start' : trial.suggest_float('ent_start', 0.1, 0.9),
-        'buffer_size': trial.suggest_int('buffer_size', int(1e5), int(1e6), log=True),
-        'n_sampled_goal': trial.suggest_float('n_sampled_goal', 1, 4),
-        "goal_selection_strategy": trial.suggest_categorical("goal_selection_strategy", ['future', 'final', 'episode']),
+        'buffer_size' : 2e6,        
         'network_size': trial.suggest_categorical('network_size', ['tiny', 'small', 'medium', 'large', 'huge'])
         }
 
@@ -324,22 +311,22 @@ if __name__ == '__main__':
 
     qmc = optuna.samplers.QMCSampler(warn_independent_sampling=False)
 
-    tpe = optuna.samplers.TPESampler(
-    consider_prior=True,    
-    consider_magic_clip=True,
-    consider_endpoints=False,
-    n_startup_trials=0,    
-    multivariate=True,
-    group=True,
-    warn_independent_sampling=False    
-    )
+    # tpe = optuna.samplers.TPESampler(
+    # consider_prior=True,    
+    # consider_magic_clip=True,
+    # consider_endpoints=False,
+    # n_startup_trials=0,    
+    # multivariate=True,
+    # group=True,
+    # warn_independent_sampling=False    
+    # )
 
-    es_sampler = optuna.samplers.CmaEsSampler(warn_independent_sampling=False)
+    # es_sampler = optuna.samplers.CmaEsSampler(warn_independent_sampling=False)
 
     # tpe = optuna.samplers.TPESampler(warn_independent_sampling = False, n_startup_trials=0)
 
     study = optuna.create_study(
-        study_name='8_9_slope_6',        
+        study_name='8_10_slope_qmc_9',        
         direction='maximize',
         pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_min_trials=10),
         storage=storage,
