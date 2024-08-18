@@ -1,3 +1,4 @@
 videos/
 models/ 
+logs/
 *.db
