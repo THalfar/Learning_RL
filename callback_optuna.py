@@ -13,7 +13,7 @@ import time
 
 
 class OptunaEvalCallback(EvalCallback):
-    def __init__(self, trial, factor=0.5, patience=5, threshold=0.01, min_lr=1e-6, *args, **kwargs):
+    def __init__(self, trial, factor=0.5, patience=5, max_patience = 8, threshold=0.01, min_lr=1e-6, *args, **kwargs):
         super(OptunaEvalCallback, self).__init__(*args, **kwargs)
         self.trial = trial
         self.factor = factor
@@ -24,8 +24,9 @@ class OptunaEvalCallback(EvalCallback):
         self.wait = 0
         self.last_check_step = 0
         self.start_time = time.time()
-        self.max_patience = 5
-        self.all_patience = 0
+        self.max_patience = max_patience
+        self.all_patience = 0 # Counter for max patience
+        self.best_model_save_path = f'./models/{self.trial.study.study_name}_{self.trial.number}_best'
         
     def _on_step(self) -> bool:
         
@@ -83,7 +84,7 @@ class OptunaEvalCallback(EvalCallback):
             mean_ep_length, std_ep_length = np.mean(episode_lengths), np.std(episode_lengths)
             self.last_mean_reward = float(mean_reward)
 
-            # --- Optuna-raportointi alkaa ---
+            # Optuna integration
             if hasattr(self, 'trial'):
                 self.trial.report(self.last_mean_reward, self.num_timesteps)
 
@@ -91,7 +92,7 @@ class OptunaEvalCallback(EvalCallback):
                     print(f'Pruning trial {self.trial.number} at timestep {self.num_timesteps} with mean reward {self.last_mean_reward}')
                     continue_training = False
                     raise optuna.exceptions.TrialPruned()
-            # --- Optuna-raportointi loppuu ---
+            
             
             if mean_reward > self.best_mean_reward:
 
@@ -177,7 +178,7 @@ def make_env(env_id):
 def objective(trial):
     
     env_name = 'HandManipulateBlockRotateParallelDense-v1'
-    total_timesteps = int(15e6)
+    total_timesteps = int(60e6)
 
     # Suggest hyperparameters
     params = {
@@ -185,7 +186,7 @@ def objective(trial):
         'gamma_eps' : trial.suggest_float('gamma_eps', 1e-5, 1e-1, log=True),
         'lr': trial.suggest_float('lr', 1e-4, 1e-2, log=True),
         'tau': trial.suggest_float('tau', 0.001, 0.01),
-        'buffer_size' : int(7e6),
+        'buffer_size' : int(5e6),
         'network_size': trial.suggest_categorical('network_size', ['tiny', 'small', 'medium', 'large', 'huge']),
         'gradient_steps': trial.suggest_int('gradient_steps', 1, 8),
         'train_freq': trial.suggest_int('train_freq', 1, 8),
@@ -221,7 +222,7 @@ def objective(trial):
     
     model_save_path = f"./models/{trial.study.study_name}_best.zip"
     eval_callback = OptunaEvalCallback(trial = trial, eval_env = env, best_model_save_path=model_save_path, log_path="./logs/",
-                                 eval_freq=6e5, deterministic=True, render=False, verbose=1, n_eval_episodes=500, patience=1, factor=0.7, min_lr=1e-6)
+                                 eval_freq=6e5, deterministic=True, render=False, verbose=1, n_eval_episodes=500, patience=2, max_patience= 42, factor=0.9, min_lr=1e-7)
 
     callback = CallbackList([eval_callback])
 
@@ -237,20 +238,18 @@ def objective(trial):
         optuna.exceptions.TrialPruned()
         return float('nan')
 
-    mean_reward, _ = evaluate_policy(model, env, n_eval_episodes=500)
+    best_reward = eval_callback.give_best()
 
     # Free memory
     env.close()
     del model
     del env
+    del eval_callback
+
+    print(f'Best reward for this trial {best_reward} with time  {(time.time() - start_time)/60:.1f} min.')
     
-    if eval_callback.give_best() > mean_reward:
-        print(f'Best mean reward from previous {eval_callback.give_best()}')
-        print(f'Mean reward from this trial {mean_reward} with time {(time.time() - start_time)/60:.1f} min.')
-        return eval_callback.give_best()
-    else:
-        print(f'Best reward for this trial {eval_callback.give_best()} with time  {(time.time() - start_time)/60:.1f} min.')
-        return mean_reward
+    
+    return best_reward
     
 if __name__ == '__main__':
 
@@ -270,7 +269,7 @@ if __name__ == '__main__':
     warn_independent_sampling=False         
     )
 
-    study_name = 'callback_8_17_test'
+    study_name = 'callback_8_20_very_long_run'
     study = optuna.create_study(
         study_name=study_name,
         direction='maximize',
@@ -284,10 +283,10 @@ if __name__ == '__main__':
     last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
                         key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:5]
 
-    # for idx, trial in enumerate(last_trials):        
-    #     print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
-    #     print(f'Params: {trial.params}')
-    #     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
+    for idx, trial in enumerate(last_trials):        
+        print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
+        print(f'Params: {trial.params}')
+        study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
 
     study.optimize(objective, n_trials=100, timeout=400 * 3600)
