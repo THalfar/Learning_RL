@@ -21,3 +21,7 @@ I am attempting to optimize Neural Architecture Search (NAS) with a two-phase ap
 - **Objective**: I use the results from the first phase for longer training in NAS.
 - **Current Metric**: I am currently experimenting with various approaches and using the moving average of the rewards from the last three training steps.
 - **Goal**: To refine the hyperparameters identified in the first phase and achieve robust performance over longer training periods.
+
+# Results 
+
+[![HandManipulateBlockRotateParallelDense solution using SAC](/pictures/hand_manipulate_block.png)](https://www.youtube.com/watch?v=eGOhrHnQlEo)
