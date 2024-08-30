@@ -24,6 +24,10 @@ I am attempting to optimize Neural Architecture Search (NAS) with a two-phase ap
 - **Class Development**: I have begun developing a class that unifies the various RL testing scripts. This class is designed to handle single-phase NAS processes, enabling streamlined experimentation with different environments and models.
 - **Next Steps**: I will continue to enhance this class by integrating more optimization strategies and improving support for diverse RL environments.
 
+## TODO
+- [ ] **Clean up test scripts**: After the class implementation is complete, remove or refactor the existing test scripts, which are currently poorly named.
+
+
 # Results 
 
 ## HandManipulateBlockRotateParallelDense 
