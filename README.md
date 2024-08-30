@@ -1,9 +1,8 @@
 # Learning_RL 
-This repository showcases my training in the field of reinforcement learning (RL). It is currently in the early stages. At present, I am learning to use RL with OpenAI Gymnasium environments. I am utilizing Optuna to implement Neural Architecture Search (NAS) and Stable Baselines3 for various RL algorithms.
+This repository showcases my training in the field of reinforcement learning (RL). It is currently in the early stages. At present, I am learning to use RL with OpenAI Gymnasium environments. I am utilizing Optuna to implement Neural Architecture Search (NAS) and Stable Baselines3 using SAC.
 
-My goal is to integrate these training scripts into a single class once I confirm that the two-phase NAS approach is viable. This integration will streamline the process and improve efficiency.
+My goal is to integrate these testing scripts into a single class once I confirm that the two-phase NAS approach is viable. This integration will streamline the process and improve efficiency.
 
-In the future, I plan to experiment with environments that better support parallelism, such as TensorFlow Agents and other interesting and parallelizable environments like Ray RLlib and Unity ML-Agents. These environments will allow me to leverage more advanced parallel processing capabilities and explore a wider range of RL applications.
 
 
 ## Two phase NAS 
@@ -24,4 +23,19 @@ I am attempting to optimize Neural Architecture Search (NAS) with a two-phase ap
 
 # Results 
 
+## HandManipulateBlockRotateParallelDense 
 [![HandManipulateBlockRotateParallelDense solution using SAC](/pictures/hand_manipulate_block.png)](https://www.youtube.com/watch?v=eGOhrHnQlEo)
+
+Success rate calculated by running 1000 trials in test enviroment: 78.8 %
+
+This model hyperparameters were optimized by two stage NAS using Optuna used the best hyperparameters for long training. 
+- First stage used Optuna QMC sampler (Quasi Monte Carlo Sampler) with 6e5 training steps
+- Second stage used Optuna TPE sampler with 10e6 training steps and evaluation every 6e5 step. For this phase 20 best hyperparameters from first stage were used as starting point by enquing these trials to TPE sampler.
+- The best founded hyperparameters were used for long training run 120e6 steps
+
+You can find the **[Best SAC model for HandManipulateBlockRotateParallelDense](/best_models/HandManipulateBlockRotateParallelDense-v1/callback_8_21_long_0_best)** in this repository.
+
+
+
+
+
