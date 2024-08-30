@@ -7,7 +7,6 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, sync_envs_normalization
 import os
 import signal
-from stable_baselines3.common.callbacks import BaseCallback
 import numpy as np
 import time
 
@@ -26,7 +25,9 @@ class OptunaEvalCallback(EvalCallback):
         self.start_time = time.time()
         self.max_patience = max_patience
         self.all_patience = 0 # Counter for max patience
-        self.best_model_save_path = f'./models/{self.trial.study.study_name}_{self.trial.number}_best'
+        self.best_model_save_path = f'./models/{self.trial.study.study_name}'
+        self.time_start = time.time()
+        self.time_step = time.time()
         
     def _on_step(self) -> bool:
         
@@ -43,7 +44,7 @@ class OptunaEvalCallback(EvalCallback):
                         "Training and eval env are not wrapped the same way, "
                         "see https://stable-baselines3.readthedocs.io/en/master/guide/callbacks.html#evalcallback "
                         "and warning above."
-                    ) from e
+                    )
 
             # Reset success rate buffer
             self._is_success_buffer = []
@@ -91,6 +92,7 @@ class OptunaEvalCallback(EvalCallback):
                 if self.trial.should_prune():
                     print(f'Pruning trial {self.trial.number} at timestep {self.num_timesteps} with mean reward {self.last_mean_reward}')
                     continue_training = False
+                    self.best_mean_reward = self.last_mean_reward
                     raise optuna.exceptions.TrialPruned()
             
             
@@ -102,10 +104,16 @@ class OptunaEvalCallback(EvalCallback):
                 self.best_mean_reward = mean_reward
                 if self.verbose >= 1:
                     print("--- New best mean reward! ---")
-                if self.best_model_save_path is not None:
-                    print(f'Saving model to {self.best_model_save_path}')
-                    self.model.save(os.path.join(self.best_model_save_path, "best_model"))
-                self.best_mean_reward = float(mean_reward)
+                    
+                    if self.trial.number != 0:
+                        if mean_reward > self.trial.study.best_value:
+                            save_path = self.best_model_save_path + f'_{mean_reward:.4f}'
+                            self.model.save(save_path)
+                            print('*********************************** New study value ***********************************')
+                            print(f"New best mean reward: {mean_reward:.2f}! Saving model to {save_path}")
+                            print('*****************************************************************************************')
+                     
+                # self.best_mean_reward = float(mean_reward)
                 # Trigger callback on new best model, if needed
                 if self.callback_on_new_best is not None:
                     continue_training = self.callback_on_new_best.on_step()
@@ -122,8 +130,8 @@ class OptunaEvalCallback(EvalCallback):
                     if old_lr != new_lr:
                         self.model.lr_schedule = lambda _: new_lr
                         if self.verbose > 0:
-                            print(f'Current mean reward {mean_reward} is not improving for {self.wait} steps. Reducing learning rate to {new_lr} in timestep {self.num_timesteps}')
-                    self.wait = 0
+                            print(f'Current mean reward {mean_reward} is not improving for {self.wait} steps. Reducing learning rate to {new_lr} in timestep {self.num_timesteps} time taken so far {(time.time() - self.time_start)/60:.1f} min.')
+                    
 
             if self.max_patience <= self.all_patience:
                 print(f'Max patience {self.all_patience}/{self.max_patience} reached. Stopping the study at timestep {self.num_timesteps} with mean reward {mean_reward}')
@@ -131,7 +139,7 @@ class OptunaEvalCallback(EvalCallback):
                 raise optuna.exceptions.TrialPruned()
                         
             if self.verbose >= 1:
-                print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
+                print(f"Eval num_timesteps: {self.num_timesteps}, " f"episode_reward: {mean_reward:.2f} +/- {std_reward:.2f}")
                 print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
             # Add to current Logger
             self.logger.record("eval/mean_reward", float(mean_reward))
@@ -152,8 +160,8 @@ class OptunaEvalCallback(EvalCallback):
             if self.callback is not None:
                 continue_training = continue_training and self._on_event()
 
-            print(f'Elapsed time {(time.time() - self.start_time)/60:.1f} min.')
-            self.start_time = time.time()
+            print(f'Elapsed time {(time.time() - self.time_step)/60:.1f} min. Total run time for trial so far {(time.time() - self.time_start)/60:.1f} min.')
+            self.time_step = time.time()
        
         return continue_training
     
@@ -177,52 +185,47 @@ def make_env(env_id):
 
 def objective(trial):
     
-    env_name = 'HandManipulateBlockRotateParallelDense-v1'
-    total_timesteps = int(60e6)
+    # env_name = 'HandManipulateBlockRotateParallelDense-v1'
+    env_name = 'LunarLanderContinuous-v2'
+    
+    total_timesteps = int(1e6)
 
     # Suggest hyperparameters
     params = {
-        'batch_size': trial.suggest_int('batch_size', 256, 512, log=True),
+        'batch_size': trial.suggest_int('batch_size', 8, 512, log=True),
         'gamma_eps' : trial.suggest_float('gamma_eps', 1e-5, 1e-1, log=True),
         'lr': trial.suggest_float('lr', 1e-4, 1e-2, log=True),
         'tau': trial.suggest_float('tau', 0.001, 0.01),
-        'buffer_size' : int(5e6),
-        'network_size': trial.suggest_categorical('network_size', ['tiny', 'small', 'medium', 'large', 'huge']),
-        'gradient_steps': trial.suggest_int('gradient_steps', 1, 8),
-        'train_freq': trial.suggest_int('train_freq', 1, 8),
+        'buffer_size' : int(1e6),        
+        'gradient_steps': trial.suggest_int('gradient_steps', 1, 4),
+        'train_freq': trial.suggest_int('train_freq', 1, 4),        
+        'network_size': trial.suggest_int('network_size', 8, 1024, log=True),
         'ent_coef': trial.suggest_categorical('ent_coef', ['auto']),
     }
 
     policy_kwargs = {
-        'net_arch': {
-            'tiny': [64, 64, 64],
-            'small': [128, 128, 128],
-            'medium': [256, 256, 256],
-            'large': [512, 512, 512],
-            'huge': [1024, 1024, 1024],
-        }[params['network_size']]
+        'net_arch' : [params['network_size'], params['network_size']]
     }
 
-    # Create the environment
     env = SubprocVecEnv([make_env(env_name) for _ in range(23)])
     
     # Set up the model
-    model = SAC('MultiInputPolicy', env,
+    model = SAC('MlpPolicy', env,
                 batch_size=params['batch_size'],
-                gamma=1 - params['gamma_eps'],
+                gamma= 1 - params['gamma_eps'],
                 learning_rate=params['lr'],
                 tau=params['tau'],
                 buffer_size=params['buffer_size'],
                 policy_kwargs=policy_kwargs,
                 verbose=0,
                 gradient_steps=params['gradient_steps'],
-                train_freq=params['train_freq'],
-                ent_coef=params['ent_coef'])
+                train_freq=params['train_freq']
+                )
 
     
-    model_save_path = f"./models/{trial.study.study_name}_best.zip"
-    eval_callback = OptunaEvalCallback(trial = trial, eval_env = env, best_model_save_path=model_save_path, log_path="./logs/",
-                                 eval_freq=6e5, deterministic=True, render=False, verbose=1, n_eval_episodes=500, patience=2, max_patience= 42, factor=0.9, min_lr=1e-7)
+    
+    eval_callback = OptunaEvalCallback(trial = trial, eval_env = env, log_path="./logs/",
+                                 eval_freq=1e5, deterministic=True, render=False, verbose=1, n_eval_episodes=2, patience=1, max_patience= 10, factor=0.5, min_lr=1e-7)
 
     callback = CallbackList([eval_callback])
 
@@ -231,12 +234,14 @@ def objective(trial):
     try:
         model.learn(total_timesteps=total_timesteps, callback=callback)
     except optuna.exceptions.TrialPruned:
-        print(f'second pruning trial {trial.number}')
-        optuna.exceptions.TrialPruned()
+        print(f'Pruning trial {trial.number}')
+        
     except Exception as e:
-        print(f'Exception {e}')
-        optuna.exceptions.TrialPruned()
-        return float('nan')
+        print(f'Exception error: {e}')
+        # optuna.exceptions.
+        
+
+        return float('-inf')
 
     best_reward = eval_callback.give_best()
 
@@ -255,40 +260,53 @@ if __name__ == '__main__':
 
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  
     signal.signal(signal.SIGINT, signal_handler)
-    storage = optuna.storages.RDBStorage('sqlite:///HandManipulateBlockRotateParallelDense.db')
+    storage = optuna.storages.RDBStorage('sqlite:///LunarLander-v2.db')
 
             
-    previous_study = optuna.load_study(study_name='8_13_phase2_test9', storage=storage)
+    # previous_study = optuna.load_study(study_name='8_13_phase2_test9', storage=storage)
 
+    
     tpe = optuna.samplers.TPESampler(
-    n_startup_trials=0,       
-    n_ei_candidates=15,        
+    n_startup_trials=10,           
     multivariate=True,         
-    group=True,                
-    constant_liar=True,
     warn_independent_sampling=False         
     )
 
-    study_name = 'callback_8_20_very_long_run'
+    study_name = '8_28_lunar_nightnas'
     study = optuna.create_study(
         study_name=study_name,
         direction='maximize',
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=3, n_min_trials=3),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=10),
         storage=storage,
         load_if_exists=True,
         sampler=tpe
     )
 
     
-    last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
-                        key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:5]
+    # last_trials = sorted([t for t in previous_study.trials if t.state != optuna.trial.TrialState.PRUNED],
+    #                     key=lambda t: t.value if t.value is not None else float('-inf'), reverse=True)[:5]
 
-    for idx, trial in enumerate(last_trials):        
-        print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
-        print(f'Params: {trial.params}')
-        study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
+    # for idx, trial in enumerate(last_trials):        
+    #     print(f'Trial {trial.number} value {trial.value} user attrs {trial.user_attrs}')
+    #     print(f'Params: {trial.params}')
+    #     study.enqueue_trial(trial.params, user_attrs=trial.user_attrs)
 
+    # study.enqueue_trial({
+    # 'batch_size': 512,
+    # 'gamma_eps': 0.01,
+    # 'lr': 0.0006,
+    # 'tau': 0.004,        
+    # 'buffer_size': 13e6,
+    # 'network_size': 'huge',
+    # 'train_freq': 5,
+    # 'gradient_steps': 5,
+    # 'ent_coef': 'auto'
+    # # # # })
+    # importance = optuna.importance.get_param_importances(study)
+    # print("Parametrien tärkeydet:")
+    # for param, value in importance.items():
+    #     print(f"{param}: {value:.4f}")
 
-    study.optimize(objective, n_trials=100, timeout=400 * 3600)
+    study.optimize(objective, n_trials=10000, timeout=400 * 3600)
 
 
