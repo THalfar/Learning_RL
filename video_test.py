@@ -26,14 +26,14 @@ num_rounds = 1000
 num_success = 0
 frames = []
 
-for _ in range(num_rounds):
+for round in range(num_rounds):
     obs, info = eval_env.reset()
     total_reward = 0
     
 
     for _ in range(100):
         frame = eval_env.render()
-        if frame is not None:
+        if frame is not None and round % 10 == 0:
             frames.append(frame)
         action, _states = model.predict(obs, deterministic=True)
         obs, reward, done, trunc, info = eval_env.step(action)
@@ -50,9 +50,11 @@ for _ in range(num_rounds):
     # eval_env.close()
     print(f'Total reward: {total_reward}')
 
-clip_name = f'/workspace/handvideos/collage_1000.mp4'
+clip_name = f'/workspace/handvideos/collage_100.mp4'
 clip = mpy.ImageSequenceClip(frames, fps=30)
 clip.write_videofile(clip_name, codec='libx264')
 print(f'Video saved to {clip_name}')
 
 print(f'Success rate {100 * (num_success/num_rounds):.2f}%')
+del model
+del eval_env
