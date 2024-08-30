@@ -3,13 +3,13 @@ This repository showcases my training in the field of reinforcement learning (RL
 
 My goal is to integrate these testing scripts into a single class once I confirm that the two-phase NAS approach is viable. This integration will streamline the process and improve efficiency.
 
-## Two phase NAS 
+## Two-phase NAS 
 
 I am attempting to optimize Neural Architecture Search (NAS) with a two-phase approach.
 
 **First Phase**:
 
-- **Objective**: In this phase, I train the model with a short number of steps using Optuna.
+- **Objective**: In this phase, I train the model with a limited number of steps using Optuna.
 - **Metric**: The optimization target is the slope of the linear fit to the rewards in this phase.
 - **Goal**: The aim is to quickly explore the hyperparameter space and identify parameters that enable rapid learning.
 
@@ -31,10 +31,11 @@ I am attempting to optimize Neural Architecture Search (NAS) with a two-phase ap
 
 Success rate calculated by running 1000 trials in test enviroment: 78.8 %
 
-This model hyperparameters were optimized by two stage NAS using Optuna used the best hyperparameters for long training. 
-- First stage used Optuna QMC sampler (Quasi Monte Carlo Sampler) with 6e5 training steps with linear fit slope as optimization target.
-- Second stage used Optuna TPE sampler with 10e6 training steps and evaluation every 6e5 step. For this phase 20 best hyperparameters from first stage were used as starting point by enquing these trials to TPE sampler. In this stage the trial result were the best evaluation value in all steps. 
-- The best founded hyperparameters were used for long training run 120e6 steps
+
+The hyperparameters for this model were optimized using a two-stage NAS process with Optuna, which identified the best hyperparameters for long training runs.
+- The first stage used Optuna's QMC sampler (Quasi-Monte Carlo Sampler) with 600,000 training steps, evaluating every 300,000 steps. A linear fit slope to these intermediate steps was used as the optimization target.
+- The second stage used Optuna's TPE sampler with 10,000,000 training steps, evaluating every 600,000 steps. In this phase, the 20 best hyperparameters from the first stage were used as the starting point by enqueueing these trials to the TPE sampler. The best evaluation value across all steps was considered the trial result.
+- The best-found hyperparameters were used for a long training run of 120,000,000 steps.
 
 Notably, to achieve this result, I modified the Stable Baselines EvalCallback class to reduce the learning rate whenever the model's training showed no progress. Additionally, Optuna's integration has been added to this class.
 
